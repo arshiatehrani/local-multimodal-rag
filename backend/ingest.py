@@ -18,9 +18,20 @@ from qdrant_store import ensure_collection, upsert_points
 
 CHUNK_SIZE = 256      # words per chunk (proxy for tokens)
 CHUNK_OVERLAP = 64    # words of overlap between chunks
-EMBED_BATCH = 8
+EMBED_BATCH = 4       # small batches keep activation memory low on 6 GB GPUs
+MAX_IMAGE_DIM = 1024  # downscale large images before embedding to cap VRAM use
 
 DOC_INSTRUCTION = "Represent the content for retrieval."
+
+
+def _cap_image(pil_img: Image.Image, max_dim: int = MAX_IMAGE_DIM) -> Image.Image:
+    """Downscale very large images so the vision encoder doesn't blow up VRAM."""
+    w, h = pil_img.size
+    if max(w, h) <= max_dim:
+        return pil_img
+    scale = max_dim / float(max(w, h))
+    new_size = (max(1, int(w * scale)), max(1, int(h * scale)))
+    return pil_img.resize(new_size, Image.LANCZOS)
 
 
 def chunk_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list:
@@ -151,7 +162,7 @@ async def ingest_file(file_bytes: bytes, filename: str) -> int:
                     encode_inputs.append(item["content"])
                 else:
                     # Qwen3-VL embedder accepts a dict with an "image" PIL object.
-                    encode_inputs.append({"image": item["content"]})
+                    encode_inputs.append({"image": _cap_image(item["content"])})
 
             vecs = embedder.encode(
                 encode_inputs,

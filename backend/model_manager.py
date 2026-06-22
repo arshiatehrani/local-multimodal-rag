@@ -15,6 +15,10 @@ import gc
 import asyncio
 import warnings
 
+# Reduce CUDA fragmentation OOMs on small GPUs. Must be set before the CUDA
+# caching allocator initialises (i.e. before the first GPU allocation).
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 import torch
 from sentence_transformers import SentenceTransformer, CrossEncoder
 
@@ -44,13 +48,15 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # "8bit"/"4bit" require an NVIDIA GPU + the `bitsandbytes` package. On CPU they
 # fall back to float32 automatically.
 # ---------------------------------------------------------------------------
-# NOTE: int8/4bit (bitsandbytes) hang on GTX 16-series cards (TU116, no int8
-# tensor cores). fp16 is the most compatible choice on Turing GPUs. Switch to
-# "4bit" only if you run out of VRAM AND bitsandbytes works on your card.
+# NOTE on small GPUs (e.g. 6 GB GTX 1660 Ti): three 2B multimodal models do NOT
+# fit in fp16 (~4.2 GB weights each + CUDA overhead -> OOM during inference).
+# 4-bit (NF4) shrinks each model to ~1.3 GB, which fits comfortably and leaves
+# room for activations. If a 4-bit load fails on your card, the loader falls
+# back to fp16 automatically (see _load_sentence_model / _load_generator).
 PRECISION = {
-    "embedder": "fp16",
-    "reranker": "fp16",
-    "generator": "fp16",
+    "embedder": "4bit",
+    "reranker": "4bit",
+    "generator": "4bit",
 }
 
 _DTYPE_ALIASES = {
@@ -266,8 +272,15 @@ class _ModelContext:
             raise
         return self._manager._model
 
-    async def __aexit__(self, *_):
-        self._manager._lock.release()
+    async def __aexit__(self, exc_type, exc, tb):
+        # On error (e.g. CUDA OOM) the resident model may be in a bad state and
+        # VRAM is likely fragmented/leaked. Evict it so the NEXT request starts
+        # from a clean slate instead of cascading OOMs.
+        try:
+            if exc_type is not None:
+                self._manager._evict()
+        finally:
+            self._manager._lock.release()
         return False
 
 
