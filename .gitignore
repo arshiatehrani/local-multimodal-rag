@@ -22,3 +22,7 @@ Thumbs.db
 # Temp
 *.log
 *.tmp
+
+# pip cache/temp redirected onto this drive by setup_env.py
+.pip-cache/
+.pip-tmp/

@@ -23,6 +23,24 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 REQUIREMENTS = os.path.join(HERE, "backend", "requirements.txt")
 
+# Large wheels (torch is ~3.6 GB) are downloaded/staged through pip's cache and
+# the system temp dir, which default to the system drive (C:). To avoid filling a
+# small C:, route both onto the same drive as this project.
+PIP_CACHE_DIR = os.path.join(HERE, ".pip-cache")
+PIP_TMP_DIR = os.path.join(HERE, ".pip-tmp")
+
+
+def _pip_env():
+    os.makedirs(PIP_CACHE_DIR, exist_ok=True)
+    os.makedirs(PIP_TMP_DIR, exist_ok=True)
+    env = dict(os.environ)
+    env["PIP_CACHE_DIR"] = PIP_CACHE_DIR
+    # TMP/TEMP cover Windows; TMPDIR covers Linux/macOS.
+    env["TMP"] = PIP_TMP_DIR
+    env["TEMP"] = PIP_TMP_DIR
+    env["TMPDIR"] = PIP_TMP_DIR
+    return env
+
 # PyTorch CUDA wheel channels, newest first. We keep every channel whose CUDA
 # version is <= the installed driver's CUDA version, then try them top-down until
 # one provides a wheel for the resolved torch version. Each channel resolves to
@@ -42,13 +60,13 @@ CUDA_CHANNELS = [
 TORCH_PKGS = ["torch", "torchvision"]
 
 
-def run(cmd):
+def run(cmd, env=None):
     print(">", " ".join(cmd), flush=True)
-    return subprocess.run(cmd).returncode
+    return subprocess.run(cmd, env=env).returncode
 
 
 def pip(*args):
-    return run([sys.executable, "-m", "pip", *args])
+    return run([sys.executable, "-m", "pip", *args], env=_pip_env())
 
 
 def detect_cuda():
