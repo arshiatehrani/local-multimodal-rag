@@ -37,8 +37,8 @@ echo.
 echo [2/4] Launching backend  (http://localhost:8000) ...
 start "RAG Backend" cmd /k ""%PY%" -m uvicorn main:app --app-dir backend --host 0.0.0.0 --port 8000 --reload"
 
-echo [3/4] Launching frontend (http://localhost:3000) ...
-start "RAG Frontend" cmd /k ""%PY%" -m http.server 3000 --directory frontend"
+echo [3/4] Launching frontend (http://127.0.0.1:3000) ...
+start "RAG Frontend" cmd /k ""%PY%" -m http.server 3000 --bind 127.0.0.1 --directory frontend"
 
 echo.
 echo [4/4] Waiting for the backend to come online...
@@ -50,20 +50,20 @@ if %tries% gtr 60 (
     goto openbrowser
 )
 timeout /t 2 /nobreak >nul
-curl -s -o nul http://localhost:8000/health
+curl -s -o nul http://127.0.0.1:8000/health
 if errorlevel 1 goto waitloop
 
 :openbrowser
 echo.
 echo Backend is up. Opening the app in your browser...
-start "" http://localhost:3000/app.html
+start "" http://127.0.0.1:3000/app.html
 
 echo.
 echo ============================================================
 echo  All services started.
-echo    Frontend : http://localhost:3000/app.html
-echo    Backend  : http://localhost:8000  (logs in the "RAG Backend" window)
-echo    Qdrant   : http://localhost:6333  (Docker)
+echo    Frontend : http://127.0.0.1:3000/app.html
+echo    Backend  : http://127.0.0.1:8000  (logs in the "RAG Backend" window)
+echo    Qdrant   : http://127.0.0.1:6333  (Docker)
 echo.
 echo  To STOP everything, run stop.bat (or close the two service
 echo  windows; Qdrant keeps running in Docker until stop.bat).
