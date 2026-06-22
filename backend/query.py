@@ -6,7 +6,7 @@ from threading import Thread
 import numpy as np
 
 from model_manager import manager
-from qdrant_store import search
+from qdrant_store import search, count_points
 
 QUERY_INSTRUCTION = "Retrieve relevant documents for the query."
 RERANK_INSTRUCTION = "Retrieve images or text relevant to the user's query."
@@ -27,6 +27,14 @@ def _doc_text_for_rerank(pay: dict) -> str:
 
 async def run_query(user_query: str):
     """Async generator yielding SSE-formatted strings for the chat stream."""
+
+    # 0) Fast path: if nothing is ingested, answer instantly WITHOUT loading the
+    # embedder (a model load can take tens of seconds on first use).
+    if count_points() == 0:
+        yield _sse({"type": "sources", "sources": []})
+        yield _sse({"type": "token", "text": "I don't have any ingested documents yet. Upload files in the Ingest tab first."})
+        yield _sse({"type": "done"})
+        return
 
     # 1) Embed the query.
     async with await manager.embedder() as embedder:

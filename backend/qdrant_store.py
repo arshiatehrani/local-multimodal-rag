@@ -37,6 +37,14 @@ def upsert_points(vectors: list, payloads: list):
         client.upsert(collection_name=COLLECTION, points=points)
 
 
+def count_points() -> int:
+    """Number of stored vectors. Returns 0 if the collection doesn't exist yet."""
+    try:
+        return client.count(collection_name=COLLECTION, exact=True).count
+    except Exception:
+        return 0
+
+
 def search(query_vector, top_k: int = 20):
     """Return a list of ScoredPoint (with payload) for the query vector."""
     result = client.query_points(

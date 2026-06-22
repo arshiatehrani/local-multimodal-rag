@@ -19,8 +19,10 @@ import warnings
 # caching allocator initialises (i.e. before the first GPU allocation).
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
-import torch
-from sentence_transformers import SentenceTransformer, CrossEncoder
+# NOTE: torch / sentence_transformers / transformers are imported LAZILY inside
+# the loader functions (not at module top-level). Importing them eagerly adds
+# 30-60s to server startup; deferring it lets the API come online in ~1-2s and
+# the first model request pays the import cost (already in a worker thread).
 
 # Resolve model paths relative to the project root (the parent of backend/), so
 # the app works no matter which directory uvicorn is launched from. Override the
@@ -33,7 +35,10 @@ EMBEDDER_PATH = os.path.join(MODELS_DIR, "Qwen3-VL-Embedding-2B")
 RERANKER_PATH = os.path.join(MODELS_DIR, "Qwen3-VL-Reranker-2B")
 GENERATOR_PATH = os.path.join(MODELS_DIR, "Qwen3-VL-2B-Instruct")
 
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+def _device() -> str:
+    """Resolve the compute device lazily (imports torch on first call)."""
+    import torch
+    return "cuda" if torch.cuda.is_available() else "cpu"
 
 # ---------------------------------------------------------------------------
 # PER-MODEL PRECISION  --  edit these to control quantization independently.
@@ -59,13 +64,20 @@ PRECISION = {
     "generator": "4bit",
 }
 
-_DTYPE_ALIASES = {
-    "bf16": torch.bfloat16, "bfloat16": torch.bfloat16,
-    "fp16": torch.float16, "float16": torch.float16, "half": torch.float16,
-    "fp32": torch.float32, "float32": torch.float32, "full": torch.float32,
+# Map precision aliases -> torch dtype attribute names (resolved lazily so we
+# don't import torch at module load time).
+_DTYPE_NAMES = {
+    "bf16": "bfloat16", "bfloat16": "bfloat16",
+    "fp16": "float16", "float16": "float16", "half": "float16",
+    "fp32": "float32", "float32": "float32", "full": "float32",
 }
 _EIGHT_BIT = {"8bit", "int8", "q8"}
 _FOUR_BIT = {"4bit", "int4", "nf4"}
+
+
+def _resolve_dtype(name: str):
+    import torch
+    return getattr(torch, _DTYPE_NAMES[name.lower()])
 
 
 def _best_float_dtype():
@@ -74,7 +86,8 @@ def _best_float_dtype():
     Ampere+ GPUs support bfloat16; older cards (e.g. Turing GTX 16xx / RTX 20xx)
     do not, so we use float16 there. CPU stays float32.
     """
-    if DEVICE != "cuda":
+    import torch
+    if _device() != "cuda":
         return torch.float32
     try:
         if torch.cuda.is_bf16_supported():
@@ -90,13 +103,14 @@ def _is_quant(precision: str) -> bool:
 
 def _build_load_kwargs(precision: str) -> dict:
     """Translate a precision label into transformers ``from_pretrained`` kwargs."""
+    import torch
     p = precision.lower()
 
     if p == "auto":
         return {"torch_dtype": _best_float_dtype()}
 
     if _is_quant(p):
-        if DEVICE != "cuda":
+        if _device() != "cuda":
             warnings.warn(
                 f"Precision '{precision}' needs a CUDA GPU; using float32 on CPU."
             )
@@ -122,11 +136,11 @@ def _build_load_kwargs(precision: str) -> dict:
         # device_map lets accelerate place the quantized weights on the GPU.
         return {"quantization_config": qcfg, "device_map": "auto"}
 
-    dtype = _DTYPE_ALIASES.get(p)
-    if dtype is None:
-        warnings.warn(f"Unknown precision '{precision}'; defaulting to auto.")
-        dtype = _best_float_dtype()
-    return {"torch_dtype": dtype}
+    if p in _DTYPE_NAMES:
+        return {"torch_dtype": _resolve_dtype(p)}
+
+    warnings.warn(f"Unknown precision '{precision}'; defaulting to auto.")
+    return {"torch_dtype": _best_float_dtype()}
 
 
 def _load_generator_cls():
@@ -158,8 +172,12 @@ class ModelManager:
             self._model = None
             self._name = None
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
 
     # --- public async context managers (use with `async with await manager.x()`) ---
 
@@ -182,7 +200,7 @@ class ModelManager:
         quantized = "quantization_config" in load_kwargs
         # When quantized, accelerate places weights via device_map; passing an
         # explicit device on top would double-place, so leave it to the library.
-        device = None if quantized else DEVICE
+        device = None if quantized else _device()
         try:
             return cls(
                 path,
@@ -197,16 +215,18 @@ class ModelManager:
                 )
                 return cls(
                     path,
-                    device=DEVICE,
+                    device=_device(),
                     trust_remote_code=True,
                     model_kwargs=_build_load_kwargs("auto"),
                 )
             raise
 
     def _load_embedder(self):
+        from sentence_transformers import SentenceTransformer
         return self._load_sentence_model(SentenceTransformer, EMBEDDER_PATH, "embedder")
 
     def _load_reranker(self):
+        from sentence_transformers import CrossEncoder
         return self._load_sentence_model(CrossEncoder, RERANKER_PATH, "reranker")
 
     def _load_generator(self):
@@ -220,7 +240,7 @@ class ModelManager:
         load_kwargs["trust_remote_code"] = True
         # bf16/fp16/fp32 paths need an explicit device_map; the quant path
         # already supplies device_map="auto".
-        load_kwargs.setdefault("device_map", DEVICE)
+        load_kwargs.setdefault("device_map", _device())
 
         # Try flash-attention-2 first (faster), then without it. flash_attention_2
         # is optional and frequently unavailable on Windows.
@@ -238,7 +258,7 @@ class ModelManager:
             )
             fb = dict(_build_load_kwargs("auto"))
             fb["trust_remote_code"] = True
-            fb.setdefault("device_map", DEVICE)
+            fb.setdefault("device_map", _device())
             model = model_cls.from_pretrained(GENERATOR_PATH, **fb)
 
         model.eval()
