@@ -104,6 +104,11 @@ hf download Qwen/Qwen3-VL-2B-Instruct  --local-dir ./models/Qwen3-VL-2B-Instruct
 
 ### 3. Start Qdrant (Terminal 1)
 
+> **Docker Desktop must be running first.** Launch it and wait until the tray
+> icon says "Docker Desktop is running" (run `docker version` and check for a
+> `Server` section). Otherwise you'll get
+> `failed to connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine`.
+
 ```powershell
 docker compose up -d
 ```
