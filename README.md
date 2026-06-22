@@ -72,7 +72,7 @@ RAG/
 ## How to run
 
 > Activate your conda environment before running any `python`, `pip`, or
-> `huggingface-cli` commands (for example: `conda activate your-env-name`).
+> `hf` commands (for example: `conda activate your-env-name`).
 
 ### 1. Install dependencies (one time)
 
@@ -94,10 +94,13 @@ pip install -r backend/requirements.txt
 
 ```powershell
 conda activate <your-env-name>
-huggingface-cli download Qwen/Qwen3-VL-Embedding-2B --local-dir ./models/Qwen3-VL-Embedding-2B
-huggingface-cli download Qwen/Qwen3-VL-Reranker-2B  --local-dir ./models/Qwen3-VL-Reranker-2B
-huggingface-cli download Qwen/Qwen3-VL-2B-Instruct  --local-dir ./models/Qwen3-VL-2B-Instruct
+hf download Qwen/Qwen3-VL-Embedding-2B --local-dir ./models/Qwen3-VL-Embedding-2B
+hf download Qwen/Qwen3-VL-Reranker-2B  --local-dir ./models/Qwen3-VL-Reranker-2B
+hf download Qwen/Qwen3-VL-2B-Instruct  --local-dir ./models/Qwen3-VL-2B-Instruct
 ```
+
+> Uses the `hf` CLI (from `huggingface-hub`, already in `requirements.txt`). The
+> old `huggingface-cli` command is deprecated — `hf download ...` replaces it.
 
 ### 3. Start Qdrant (Terminal 1)
 
