@@ -35,13 +35,13 @@ RAG/
 
 ## How to run
 
-> All `python` / `pip` / `huggingface-cli` commands assume your conda env `p` is
-> active: run `conda activate p` first in each terminal.
+> Activate your conda environment before running any `python`, `pip`, or
+> `huggingface-cli` commands (for example: `conda activate your-env-name`).
 
 ### 1. Install dependencies (one time)
 
 ```powershell
-conda activate p
+conda activate <your-env-name>
 pip install -r backend/requirements.txt
 ```
 
@@ -52,7 +52,7 @@ pip install -r backend/requirements.txt
 ### 2. Download the model weights (one time, ~ a few GB each)
 
 ```powershell
-conda activate p
+conda activate <your-env-name>
 huggingface-cli download Qwen/Qwen3-VL-Embedding-2B --local-dir ./models/Qwen3-VL-Embedding-2B
 huggingface-cli download Qwen/Qwen3-VL-Reranker-2B  --local-dir ./models/Qwen3-VL-Reranker-2B
 huggingface-cli download Qwen/Qwen3-VL-2B-Instruct  --local-dir ./models/Qwen3-VL-2B-Instruct
@@ -70,7 +70,7 @@ Qdrant will be available at `http://localhost:6333` with data persisted in
 ### 4. Start the backend (Terminal 2)
 
 ```powershell
-conda activate p
+conda activate <your-env-name>
 cd backend
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
@@ -83,7 +83,7 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 Serve the single-file SPA and open it in the browser:
 
 ```powershell
-conda activate p
+conda activate <your-env-name>
 python -m http.server 3000 --directory frontend
 ```
 
