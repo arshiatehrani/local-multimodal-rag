@@ -2,7 +2,8 @@ fastapi>=0.111.0
 uvicorn[standard]>=0.30.0
 python-multipart>=0.0.9
 sse-starlette>=1.8.0
-torch>=2.8.0
+# torch is installed separately by ../setup_env.py (CUDA-matched build).
+# Installing it here would pull the CPU-only wheel from PyPI.
 transformers>=4.57.0
 sentence-transformers>=3.0.0
 qwen-vl-utils>=0.0.14

@@ -59,6 +59,22 @@ _EIGHT_BIT = {"8bit", "int8", "q8"}
 _FOUR_BIT = {"4bit", "int4", "nf4"}
 
 
+def _best_float_dtype():
+    """Best 16-bit dtype for this device.
+
+    Ampere+ GPUs support bfloat16; older cards (e.g. Turing GTX 16xx / RTX 20xx)
+    do not, so we use float16 there. CPU stays float32.
+    """
+    if DEVICE != "cuda":
+        return torch.float32
+    try:
+        if torch.cuda.is_bf16_supported():
+            return torch.bfloat16
+    except Exception:
+        pass
+    return torch.float16
+
+
 def _is_quant(precision: str) -> bool:
     return precision.lower() in (_EIGHT_BIT | _FOUR_BIT)
 
@@ -66,6 +82,9 @@ def _is_quant(precision: str) -> bool:
 def _build_load_kwargs(precision: str) -> dict:
     """Translate a precision label into transformers ``from_pretrained`` kwargs."""
     p = precision.lower()
+
+    if p == "auto":
+        return {"torch_dtype": _best_float_dtype()}
 
     if _is_quant(p):
         if DEVICE != "cuda":
@@ -88,15 +107,16 @@ def _build_load_kwargs(precision: str) -> dict:
                 load_in_4bit=True,
                 bnb_4bit_quant_type="nf4",
                 bnb_4bit_use_double_quant=True,
-                bnb_4bit_compute_dtype=torch.bfloat16,
+                # bf16 on Ampere+, fp16 on older GPUs (Turing GTX 16xx etc.).
+                bnb_4bit_compute_dtype=_best_float_dtype(),
             )
         # device_map lets accelerate place the quantized weights on the GPU.
         return {"quantization_config": qcfg, "device_map": "auto"}
 
     dtype = _DTYPE_ALIASES.get(p)
     if dtype is None:
-        warnings.warn(f"Unknown precision '{precision}'; defaulting to bf16/fp32.")
-        dtype = torch.bfloat16 if DEVICE == "cuda" else torch.float32
+        warnings.warn(f"Unknown precision '{precision}'; defaulting to auto.")
+        dtype = _best_float_dtype()
     return {"torch_dtype": dtype}
 
 
@@ -164,13 +184,13 @@ class ModelManager:
         except Exception as e:  # pragma: no cover - depends on env
             if quantized:
                 warnings.warn(
-                    f"{role}: '{precision}' load failed ({e}); falling back to bf16/fp32."
+                    f"{role}: '{precision}' load failed ({e}); falling back to fp16/fp32."
                 )
                 return cls(
                     path,
                     device=DEVICE,
                     trust_remote_code=True,
-                    model_kwargs=_build_load_kwargs("bf16"),
+                    model_kwargs=_build_load_kwargs("auto"),
                 )
             raise
 
@@ -205,9 +225,9 @@ class ModelManager:
 
         if model is None:  # pragma: no cover - depends on env
             warnings.warn(
-                f"generator: '{precision}' load failed; falling back to bf16/fp32."
+                f"generator: '{precision}' load failed; falling back to fp16/fp32."
             )
-            fb = dict(_build_load_kwargs("bf16"))
+            fb = dict(_build_load_kwargs("auto"))
             fb["trust_remote_code"] = True
             fb.setdefault("device_map", DEVICE)
             model = model_cls.from_pretrained(GENERATOR_PATH, **fb)

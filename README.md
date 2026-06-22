@@ -74,38 +74,43 @@ RAG/
 > Activate your conda environment before running any `python`, `pip`, or
 > `hf` commands (for example: `conda activate your-env-name`).
 
-### 1. Install dependencies (one time)
+### 1. Install dependencies (one time) — automated
+
+Run the setup script. It auto-detects your CUDA version (via `nvidia-smi`),
+installs the matching CUDA build of PyTorch, then installs everything else:
 
 ```powershell
 conda activate <your-env-name>
-pip install -r backend/requirements.txt
+python setup_env.py
 ```
 
-#### GPU (CUDA) PyTorch — required for Q8 / GPU
+This is portable: a different machine/CUDA version gets the right wheel
+automatically, and a machine with no NVIDIA GPU falls back to the CPU build. When
+it finishes it prints something like `torch ... | cuda available: True`.
 
-`pip install torch` usually installs a **CPU-only** build (`x.y.z+cpu`), which
-disables CUDA and forces fp32 on CPU. Verify what you have:
+<details>
+<summary>What if I want to do it manually instead?</summary>
 
-```powershell
-python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
-```
-
-If it prints `...+cpu` or `False`, install a CUDA build (pick the cuXXX matching
-your driver from https://pytorch.org/get-started/locally/ — check `nvidia-smi`):
+`pip install torch` from PyPI gives a **CPU-only** build (`x.y.z+cpu`). To get
+GPU support, install a CUDA wheel matching your driver (find the `cuXXX` at
+https://pytorch.org/get-started/locally/), then the rest:
 
 ```powershell
 pip uninstall -y torch torchvision torchaudio
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+pip install -r backend/requirements.txt
+python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
 ```
+</details>
 
-Re-run the verify command; you want `True`. Notes:
+Notes:
 
 - The default **Q8 quantization needs `bitsandbytes` + an NVIDIA GPU** (already in
   `requirements.txt`; Windows is supported on `bitsandbytes>=0.43`).
 - `flash_attention_2` is optional and skipped automatically if not installed.
-- **No GPU?** The app still runs on CPU: set the models to `bf16`/`fp32` in the
-  `PRECISION` dict in `backend/model_manager.py` (or just rely on the automatic
-  CPU fallback — it will be slow but functional).
+- The code auto-selects the best dtype per GPU (bfloat16 on Ampere+, **float16**
+  on older cards like Turing GTX 16xx / RTX 20xx).
+- **No GPU?** It still runs on CPU (fp32) — slower but functional.
 
 ### 2. Download the model weights (one time, ~ a few GB each)
 
