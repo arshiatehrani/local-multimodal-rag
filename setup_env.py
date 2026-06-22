@@ -25,8 +25,13 @@ REQUIREMENTS = os.path.join(HERE, "backend", "requirements.txt")
 
 # PyTorch CUDA wheel channels, newest first. We keep every channel whose CUDA
 # version is <= the installed driver's CUDA version, then try them top-down until
-# one provides a wheel for the resolved torch version.
+# one provides a wheel for the resolved torch version. Each channel resolves to
+# the index URL https://download.pytorch.org/whl/<channel>.
+# Channel list mirrors https://download.pytorch.org/whl/ (CUDA folders only).
 CUDA_CHANNELS = [
+    (13, 2, "cu132"),
+    (13, 0, "cu130"),
+    (12, 9, "cu129"),
     (12, 8, "cu128"),
     (12, 6, "cu126"),
     (12, 4, "cu124"),
