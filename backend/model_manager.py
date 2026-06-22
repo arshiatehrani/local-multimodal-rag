@@ -44,10 +44,13 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # "8bit"/"4bit" require an NVIDIA GPU + the `bitsandbytes` package. On CPU they
 # fall back to float32 automatically.
 # ---------------------------------------------------------------------------
+# NOTE: int8/4bit (bitsandbytes) hang on GTX 16-series cards (TU116, no int8
+# tensor cores). fp16 is the most compatible choice on Turing GPUs. Switch to
+# "4bit" only if you run out of VRAM AND bitsandbytes works on your card.
 PRECISION = {
-    "embedder": "8bit",
-    "reranker": "8bit",
-    "generator": "8bit",
+    "embedder": "fp16",
+    "reranker": "fp16",
+    "generator": "fp16",
 }
 
 _DTYPE_ALIASES = {
@@ -253,7 +256,10 @@ class _ModelContext:
         try:
             if self._manager._name != self._name:
                 self._manager._evict()
-                self._manager._model = self._loader()
+                # Run the (slow, blocking) load in a worker thread so the asyncio
+                # event loop stays responsive (e.g. /health keeps answering and
+                # client connections don't drop while a model loads).
+                self._manager._model = await asyncio.to_thread(self._loader)
                 self._manager._name = self._name
         except Exception:
             self._manager._lock.release()
