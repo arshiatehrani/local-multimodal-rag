@@ -7,11 +7,47 @@ grounded generation, all on `localhost`, no external API calls.
 
 All three models are **hot-swapped** so only one is ever resident in VRAM:
 
-| Role       | Model                      | HF ID                          |
-|------------|----------------------------|--------------------------------|
-| Embedding  | Qwen3-VL-Embedding-2B      | `Qwen/Qwen3-VL-Embedding-2B`   |
-| Reranker   | Qwen3-VL-Reranker-2B       | `Qwen/Qwen3-VL-Reranker-2B`    |
-| Generator  | Qwen3-VL-2B-Instruct       | `Qwen/Qwen3-VL-2B-Instruct`    |
+| Role       | Model                  | HF ID                        | Default precision |
+|------------|------------------------|------------------------------|-------------------|
+| Embedding  | Qwen3-VL-Embedding-2B  | `Qwen/Qwen3-VL-Embedding-2B` | Q8 (INT8)         |
+| Reranker   | Qwen3-VL-Reranker-2B   | `Qwen/Qwen3-VL-Reranker-2B`  | Q8 (INT8)         |
+| Generator  | Qwen3-VL-2B-Instruct   | `Qwen/Qwen3-VL-2B-Instruct`  | Q8 (INT8)         |
+
+### Quantization (Q8) — configurable per model
+
+All three models are loaded **8-bit (Q8 / INT8) quantized** via `bitsandbytes`
+(`BitsAndBytesConfig(load_in_8bit=True)`). This roughly halves VRAM vs bfloat16.
+
+Precision is controlled **per model** by a single dict at the top of
+`backend/model_manager.py` — change any entry independently:
+
+```python
+# backend/model_manager.py
+PRECISION = {
+    "embedder": "8bit",   # Q8 / INT8 (bitsandbytes)
+    "reranker": "8bit",
+    "generator": "8bit",
+}
+```
+
+Accepted values for each model:
+
+| Value    | Meaning                                  | Requires            |
+|----------|------------------------------------------|---------------------|
+| `"8bit"` | Q8 / INT8 weight quantization (default)  | NVIDIA GPU + bitsandbytes |
+| `"4bit"` | NF4 4-bit weight quantization            | NVIDIA GPU + bitsandbytes |
+| `"bf16"` | bfloat16                                 | GPU (or CPU)        |
+| `"fp16"` | float16                                  | GPU                 |
+| `"fp32"` | float32                                  | CPU or GPU          |
+
+Notes:
+
+- `8bit` / `4bit` require an **NVIDIA GPU** and the `bitsandbytes` package. On CPU
+  they automatically fall back to `float32`.
+- If a quantized load fails at runtime (e.g. an unsupported GPU/driver), the
+  loader logs a warning and **falls back to bf16/fp32** so the app keeps working.
+- Mix and match freely — e.g. run the generator in `bf16` for max quality while
+  keeping the embedder/reranker in `8bit` to save VRAM.
 
 ## Project layout
 
@@ -48,6 +84,11 @@ pip install -r backend/requirements.txt
 > For GPU, make sure your `torch` build matches your CUDA version
 > (see https://pytorch.org/get-started/locally/). `flash_attention_2` is optional
 > and is skipped automatically if it isn't installed.
+>
+> The default **Q8 quantization needs `bitsandbytes` + an NVIDIA GPU** (already in
+> `requirements.txt`; Windows is supported on `bitsandbytes>=0.43`). If you don't
+> have a GPU, set the models to `bf16`/`fp32` in the `PRECISION` dict in
+> `backend/model_manager.py` (or just let the automatic CPU fallback handle it).
 
 ### 2. Download the model weights (one time, ~ a few GB each)
 
@@ -101,9 +142,27 @@ Then go to **http://localhost:3000/app.html**.
 2. **Chat tab** — ask a question. The answer streams in token-by-token, with a
    collapsible **Sources** panel (thumbnails + filename + page) below it.
 
+## Expected VRAM usage
+
+Because of hot-swapping, only one model is resident at a time, so peak VRAM is
+bounded by the largest single model (the generator). With the default **Q8**
+quantization, each 2B model is roughly half its bf16 size.
+
+| State        | Active model | VRAM (Q8 / INT8) | VRAM (bf16)      |
+|--------------|--------------|------------------|------------------|
+| Idle         | None         | ~0.5 GB (CUDA context) | ~0.5 GB    |
+| Ingesting    | Embedder     | ~1.5 GB          | ~2.5 GB          |
+| Query step 1 | Embedder     | ~1.5 GB          | ~2.5 GB          |
+| Query step 2 | Reranker     | ~1.5 GB          | ~2.5 GB          |
+| Query step 3 | Generator    | ~2.0 GB          | ~3.2 GB          |
+| **Peak**     | Any one model| **~2.5 GB max**  | **~3.5 GB max**  |
+
 ## Notes & tuning
 
-- **VRAM**: peak ≈ 3.5 GB (one model at a time). Idle ≈ 0.5 GB CUDA context.
+- **Precision / quantization**: per-model `PRECISION` dict in
+  `backend/model_manager.py` (default `8bit` for all three). Supports
+  `8bit`/`4bit`/`bf16`/`fp16`/`fp32`; quantized loads fall back to bf16/fp32 if
+  unavailable.
 - **Chunking**: 256-word chunks with 64-word overlap (`backend/ingest.py`).
 - **Retrieval**: top-20 vector search → rerank → top-5 to the generator
   (`backend/query.py`).

@@ -11,6 +11,7 @@ pymupdf>=1.24.0
 Pillow>=10.0.0
 numpy>=1.26.0
 accelerate>=0.30.0
+bitsandbytes>=0.43.0  # 8-bit / 4-bit (Q8) quantization; GPU only (Windows supported since 0.43)
 einops>=0.7.0
 opencv-python-headless>=4.9.0
 huggingface-hub>=0.24.0
