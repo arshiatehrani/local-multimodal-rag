@@ -34,8 +34,11 @@ if errorlevel 1 (
 )
 
 echo.
-echo [2/4] Launching backend  (http://localhost:8000) ...
-start "RAG Backend" cmd /k ""%PY%" -m uvicorn main:app --app-dir backend --host 0.0.0.0 --port 8000 --reload"
+echo [2/4] Launching backend  (http://127.0.0.1:8000) ...
+REM --reload-dir limits the file watcher to backend/ ONLY. Without it, --reload
+REM tries to watch the whole project (models/, venv/, .pip-cache/) which makes
+REM the reloader choke on Windows. Bind explicitly to loopback IPv4.
+start "RAG Backend" cmd /k ""%PY%" -m uvicorn main:app --app-dir backend --reload --reload-dir backend --host 127.0.0.1 --port 8000"
 
 echo [3/4] Launching frontend (http://127.0.0.1:3000) ...
 start "RAG Frontend" cmd /k ""%PY%" -m http.server 3000 --bind 127.0.0.1 --directory frontend"
