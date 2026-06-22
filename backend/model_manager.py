@@ -10,6 +10,7 @@ Quantization is configured PER MODEL via the ``PRECISION`` dict below. Change a
 single entry to switch how that one model is loaded.
 """
 
+import os
 import gc
 import asyncio
 import warnings
@@ -17,9 +18,16 @@ import warnings
 import torch
 from sentence_transformers import SentenceTransformer, CrossEncoder
 
-EMBEDDER_PATH = "./models/Qwen3-VL-Embedding-2B"
-RERANKER_PATH = "./models/Qwen3-VL-Reranker-2B"
-GENERATOR_PATH = "./models/Qwen3-VL-2B-Instruct"
+# Resolve model paths relative to the project root (the parent of backend/), so
+# the app works no matter which directory uvicorn is launched from. Override the
+# location with the MODELS_DIR environment variable if needed.
+_BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(_BACKEND_DIR)
+MODELS_DIR = os.environ.get("MODELS_DIR", os.path.join(_PROJECT_ROOT, "models"))
+
+EMBEDDER_PATH = os.path.join(MODELS_DIR, "Qwen3-VL-Embedding-2B")
+RERANKER_PATH = os.path.join(MODELS_DIR, "Qwen3-VL-Reranker-2B")
+GENERATOR_PATH = os.path.join(MODELS_DIR, "Qwen3-VL-2B-Instruct")
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 

@@ -81,14 +81,31 @@ conda activate <your-env-name>
 pip install -r backend/requirements.txt
 ```
 
-> For GPU, make sure your `torch` build matches your CUDA version
-> (see https://pytorch.org/get-started/locally/). `flash_attention_2` is optional
-> and is skipped automatically if it isn't installed.
->
-> The default **Q8 quantization needs `bitsandbytes` + an NVIDIA GPU** (already in
-> `requirements.txt`; Windows is supported on `bitsandbytes>=0.43`). If you don't
-> have a GPU, set the models to `bf16`/`fp32` in the `PRECISION` dict in
-> `backend/model_manager.py` (or just let the automatic CPU fallback handle it).
+#### GPU (CUDA) PyTorch — required for Q8 / GPU
+
+`pip install torch` usually installs a **CPU-only** build (`x.y.z+cpu`), which
+disables CUDA and forces fp32 on CPU. Verify what you have:
+
+```powershell
+python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+```
+
+If it prints `...+cpu` or `False`, install a CUDA build (pick the cuXXX matching
+your driver from https://pytorch.org/get-started/locally/ — check `nvidia-smi`):
+
+```powershell
+pip uninstall -y torch torchvision torchaudio
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+```
+
+Re-run the verify command; you want `True`. Notes:
+
+- The default **Q8 quantization needs `bitsandbytes` + an NVIDIA GPU** (already in
+  `requirements.txt`; Windows is supported on `bitsandbytes>=0.43`).
+- `flash_attention_2` is optional and skipped automatically if not installed.
+- **No GPU?** The app still runs on CPU: set the models to `bf16`/`fp32` in the
+  `PRECISION` dict in `backend/model_manager.py` (or just rely on the automatic
+  CPU fallback — it will be slow but functional).
 
 ### 2. Download the model weights (one time, ~ a few GB each)
 
@@ -124,8 +141,10 @@ cd backend
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-> The backend resolves `./models/...` relative to the directory it's launched
-> from, so start `uvicorn` from inside `backend/` (or use an absolute path).
+> Run this from inside `backend/` (the modules import each other as top-level
+> names). Model paths are resolved automatically relative to the project root, so
+> the models in `RAG/models/` are found regardless of the launch directory. To
+> store models elsewhere, set the `MODELS_DIR` environment variable.
 
 ### 5. Open the frontend (Terminal 3)
 
