@@ -1,0 +1,24 @@
+# Model weights
+models/
+
+# Qdrant persistent storage
+qdrant_data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.env
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Temp
+*.log
+*.tmp

@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Multimodal RAG</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #0f0f0f;
+    --surface: #1a1a1a;
+    --surface-2: #202020;
+    --border: #2a2a2a;
+    --text: #ededed;
+    --text-dim: #8b8b8b;
+    --accent: #14b8a6;
+    --accent-dim: #0d8276;
+    --user-bubble: #14b8a6;
+    --radius: 12px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: 'Inter', -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
+    font-size: 14px;
+  }
+
+  /* Sidebar */
+  .sidebar {
+    width: 220px;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    padding: 20px 14px;
+    flex-shrink: 0;
+  }
+  .logo {
+    display: flex; align-items: center; gap: 10px;
+    font-weight: 700; font-size: 16px; padding: 6px 8px 24px;
+  }
+  .logo .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 12px var(--accent); }
+  .nav-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 12px; border-radius: 8px; cursor: pointer;
+    color: var(--text-dim); font-weight: 500; margin-bottom: 4px;
+    transition: background .15s ease, color .15s ease;
+    user-select: none;
+  }
+  .nav-item svg { width: 18px; height: 18px; }
+  .nav-item:hover { background: var(--surface-2); color: var(--text); }
+  .nav-item.active { background: var(--surface-2); color: var(--accent); }
+  .sidebar-footer { margin-top: auto; font-size: 11px; color: var(--text-dim); padding: 8px; }
+  .status-pill { display: inline-flex; align-items: center; gap: 6px; }
+  .status-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: #555; }
+  .status-pill.online .dot { background: var(--accent); }
+
+  /* Main */
+  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .view { display: none; flex: 1; flex-direction: column; min-height: 0; }
+  .view.active { display: flex; }
+  .header { padding: 22px 32px; border-bottom: 1px solid var(--border); }
+  .header h1 { font-size: 18px; font-weight: 600; }
+  .header p { color: var(--text-dim); margin-top: 4px; }
+
+  /* Ingest */
+  .ingest-body { padding: 28px 32px; overflow-y: auto; }
+  .dropzone {
+    border: 2px dashed var(--border); border-radius: var(--radius);
+    padding: 48px 24px; text-align: center; cursor: pointer;
+    transition: border-color .15s ease, background .15s ease;
+    background: var(--surface);
+  }
+  .dropzone:hover, .dropzone.drag { border-color: var(--accent); background: var(--surface-2); }
+  .dropzone .icon { font-size: 34px; margin-bottom: 12px; opacity: .8; }
+  .dropzone strong { color: var(--accent); }
+  .dropzone small { display: block; color: var(--text-dim); margin-top: 8px; }
+  .filelist { margin-top: 24px; display: flex; flex-direction: column; gap: 10px; }
+  .file-row {
+    display: flex; align-items: center; gap: 14px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 16px;
+  }
+  .file-row .fname { font-weight: 500; flex: 1; word-break: break-all; }
+  .file-row .fstatus { font-size: 12px; color: var(--text-dim); display: flex; align-items: center; gap: 8px; }
+  .file-row .fstatus.ok { color: var(--accent); }
+  .file-row .fstatus.err { color: #ef4444; }
+  .spinner {
+    width: 14px; height: 14px; border: 2px solid var(--border);
+    border-top-color: var(--accent); border-radius: 50%;
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Chat */
+  .chat-scroll { flex: 1; overflow-y: auto; padding: 28px 32px; }
+  .empty-state {
+    height: 100%; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; color: var(--text-dim); gap: 8px;
+  }
+  .empty-state .icon { font-size: 40px; opacity: .6; }
+  .msg { max-width: 760px; margin: 0 auto 22px; display: flex; }
+  .msg.user { justify-content: flex-end; }
+  .bubble {
+    padding: 12px 16px; border-radius: 14px; line-height: 1.55;
+    white-space: pre-wrap; word-wrap: break-word; max-width: 80%;
+  }
+  .msg.user .bubble { background: var(--user-bubble); color: #04201d; border-bottom-right-radius: 4px; font-weight: 500; }
+  .msg.assistant .bubble { background: var(--surface); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+  .cursor { display: inline-block; width: 8px; height: 16px; background: var(--accent); margin-left: 2px; vertical-align: text-bottom; animation: blink 1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  .sources { max-width: 760px; margin: -10px auto 22px; }
+  details.sources-panel {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+  }
+  details.sources-panel summary {
+    padding: 10px 14px; cursor: pointer; color: var(--text-dim);
+    font-size: 12px; font-weight: 500; user-select: none; list-style: none;
+  }
+  details.sources-panel summary::-webkit-details-marker { display: none; }
+  details.sources-panel summary:hover { color: var(--text); }
+  .source-grid { display: flex; flex-wrap: wrap; gap: 12px; padding: 4px 14px 16px; }
+  .source-card { width: 130px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .source-card img { width: 100%; height: 90px; object-fit: cover; display: block; background: #000; }
+  .source-card .meta { padding: 8px; font-size: 11px; }
+  .source-card .meta .fn { font-weight: 500; word-break: break-all; }
+  .source-card .meta .pg { color: var(--text-dim); margin-top: 2px; }
+  .badge { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 4px; background: var(--accent-dim); color: #d6fffb; margin-top: 4px; }
+
+  /* Composer */
+  .composer { border-top: 1px solid var(--border); padding: 16px 32px; }
+  .composer-inner { max-width: 760px; margin: 0 auto; display: flex; gap: 10px; align-items: flex-end; }
+  textarea#chatInput {
+    flex: 1; resize: none; background: var(--surface); color: var(--text);
+    border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px;
+    font-family: inherit; font-size: 14px; line-height: 1.4; max-height: 160px;
+    transition: border-color .15s ease;
+  }
+  textarea#chatInput:focus { outline: none; border-color: var(--accent); }
+  button.send {
+    background: var(--accent); color: #04201d; border: none; border-radius: 12px;
+    padding: 12px 20px; font-weight: 600; cursor: pointer; font-family: inherit;
+    transition: background .15s ease, opacity .15s ease;
+  }
+  button.send:hover { background: var(--accent-dim); color: #d6fffb; }
+  button.send:disabled { opacity: .5; cursor: not-allowed; }
+</style>
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="logo"><span class="dot"></span> Multimodal RAG</div>
+    <div class="nav-item active" data-view="ingest">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+      Ingest
+    </div>
+    <div class="nav-item" data-view="chat">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+      Chat
+    </div>
+    <div class="sidebar-footer">
+      <div class="status-pill" id="statusPill"><span class="dot"></span> <span id="statusText">checking...</span></div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <!-- INGEST VIEW -->
+    <section class="view active" id="view-ingest">
+      <div class="header">
+        <h1>Ingest</h1>
+        <p>Upload PDFs, images, or videos to embed and store in the vector database.</p>
+      </div>
+      <div class="ingest-body">
+        <div class="dropzone" id="dropzone">
+          <div class="icon">&#8682;</div>
+          <div><strong>Click to browse</strong> or drag &amp; drop files here</div>
+          <small>Supported: .pdf .png .jpg .jpeg .webp .mp4 .mov .avi .mkv</small>
+          <input type="file" id="fileInput" multiple accept=".pdf,.png,.jpg,.jpeg,.webp,.bmp,.tiff,.mp4,.mov,.avi,.mkv" hidden />
+        </div>
+        <div class="filelist" id="filelist"></div>
+      </div>
+    </section>
+
+    <!-- CHAT VIEW -->
+    <section class="view" id="view-chat">
+      <div class="header">
+        <h1>Chat</h1>
+        <p>Ask questions grounded in your ingested knowledge base.</p>
+      </div>
+      <div class="chat-scroll" id="chatScroll">
+        <div class="empty-state" id="emptyState">
+          <div class="icon">&#128172;</div>
+          <div>Upload files in the Ingest tab, then ask questions here.</div>
+        </div>
+      </div>
+      <div class="composer">
+        <div class="composer-inner">
+          <textarea id="chatInput" rows="1" placeholder="Ask a question..."></textarea>
+          <button class="send" id="sendBtn">Send</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+<script>
+const API = "http://localhost:8000";
+
+/* ---------- Tab navigation ---------- */
+document.querySelectorAll(".nav-item").forEach(item => {
+  item.addEventListener("click", () => {
+    document.querySelectorAll(".nav-item").forEach(n => n.classList.remove("active"));
+    item.classList.add("active");
+    const view = item.dataset.view;
+    document.querySelectorAll(".view").forEach(v => v.classList.remove("active"));
+    document.getElementById("view-" + view).classList.add("active");
+  });
+});
+
+/* ---------- Health check ---------- */
+async function checkHealth() {
+  const pill = document.getElementById("statusPill");
+  const txt = document.getElementById("statusText");
+  try {
+    const r = await fetch(API + "/health");
+    if (r.ok) { pill.classList.add("online"); txt.textContent = "backend online"; return; }
+    throw new Error();
+  } catch { pill.classList.remove("online"); txt.textContent = "backend offline"; }
+}
+checkHealth();
+setInterval(checkHealth, 8000);
+
+/* ---------- Ingest ---------- */
+const dropzone = document.getElementById("dropzone");
+const fileInput = document.getElementById("fileInput");
+const filelist = document.getElementById("filelist");
+
+dropzone.addEventListener("click", () => fileInput.click());
+dropzone.addEventListener("dragover", e => { e.preventDefault(); dropzone.classList.add("drag"); });
+dropzone.addEventListener("dragleave", () => dropzone.classList.remove("drag"));
+dropzone.addEventListener("drop", e => {
+  e.preventDefault(); dropzone.classList.remove("drag");
+  handleFiles(e.dataTransfer.files);
+});
+fileInput.addEventListener("change", () => handleFiles(fileInput.files));
+
+function handleFiles(files) {
+  [...files].forEach(uploadFile);
+  fileInput.value = "";
+}
+
+async function uploadFile(file) {
+  const row = document.createElement("div");
+  row.className = "file-row";
+  row.innerHTML = `
+    <span class="fname"></span>
+    <span class="fstatus"><span class="spinner"></span> processing...</span>`;
+  row.querySelector(".fname").textContent = file.name;
+  filelist.prepend(row);
+  const statusEl = row.querySelector(".fstatus");
+
+  const fd = new FormData();
+  fd.append("file", file);
+  try {
+    const r = await fetch(API + "/ingest", { method: "POST", body: fd });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || "Upload failed");
+    statusEl.className = "fstatus ok";
+    statusEl.textContent = `\u2713 stored ${data.chunks_stored} chunks`;
+  } catch (err) {
+    statusEl.className = "fstatus err";
+    statusEl.textContent = "\u2717 " + err.message;
+  }
+}
+
+/* ---------- Chat ---------- */
+const chatScroll = document.getElementById("chatScroll");
+const chatInput = document.getElementById("chatInput");
+const sendBtn = document.getElementById("sendBtn");
+const emptyState = document.getElementById("emptyState");
+
+chatInput.addEventListener("input", () => {
+  chatInput.style.height = "auto";
+  chatInput.style.height = Math.min(chatInput.scrollHeight, 160) + "px";
+});
+chatInput.addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+});
+sendBtn.addEventListener("click", sendMessage);
+
+function addBubble(role, text) {
+  if (emptyState) emptyState.style.display = "none";
+  const wrap = document.createElement("div");
+  wrap.className = "msg " + role;
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  bubble.textContent = text || "";
+  wrap.appendChild(bubble);
+  chatScroll.appendChild(wrap);
+  chatScroll.scrollTop = chatScroll.scrollHeight;
+  return bubble;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function renderSources(sources) {
+  if (!sources || !sources.length) return;
+  const wrap = document.createElement("div");
+  wrap.className = "sources";
+  const cards = sources.map(s => {
+    const img = s.thumbnail
+      ? `<img src="data:image/jpeg;base64,${s.thumbnail}" alt="source" />`
+      : "";
+    return `<div class="source-card">
+      ${img}
+      <div class="meta">
+        <div class="fn">${escapeHtml(s.filename)}</div>
+        <div class="pg">page ${escapeHtml(s.page)}</div>
+        <span class="badge">${escapeHtml(s.modality)}</span>
+      </div>
+    </div>`;
+  }).join("");
+  wrap.innerHTML = `<details class="sources-panel">
+    <summary>&#9656; Sources (${sources.length})</summary>
+    <div class="source-grid">${cards}</div>
+  </details>`;
+  chatScroll.appendChild(wrap);
+  chatScroll.scrollTop = chatScroll.scrollHeight;
+}
+
+let streaming = false;
+
+async function sendMessage() {
+  const query = chatInput.value.trim();
+  if (!query || streaming) return;
+
+  addBubble("user", query);
+  chatInput.value = "";
+  chatInput.style.height = "auto";
+
+  streaming = true;
+  sendBtn.disabled = true;
+
+  const bubble = addBubble("assistant", "");
+  const cursor = document.createElement("span");
+  cursor.className = "cursor";
+  bubble.appendChild(cursor);
+
+  let answer = "";
+
+  try {
+    const resp = await fetch(API + "/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query }),
+    });
+    if (!resp.ok || !resp.body) throw new Error("Request failed (" + resp.status + ")");
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const events = buffer.split("\n\n");
+      buffer = events.pop();  // keep incomplete tail
+
+      for (const evt of events) {
+        const line = evt.split("\n").find(l => l.startsWith("data:"));
+        if (!line) continue;
+        let data;
+        try { data = JSON.parse(line.slice(5).trim()); } catch { continue; }
+
+        if (data.type === "token") {
+          answer += data.text;
+          bubble.textContent = answer;
+          bubble.appendChild(cursor);
+          chatScroll.scrollTop = chatScroll.scrollHeight;
+        } else if (data.type === "sources") {
+          bubble.dataset.sources = JSON.stringify(data.sources);
+        } else if (data.type === "done") {
+          cursor.remove();
+        }
+      }
+    }
+    cursor.remove();
+    if (bubble.dataset.sources) renderSources(JSON.parse(bubble.dataset.sources));
+  } catch (err) {
+    cursor.remove();
+    bubble.textContent = (answer ? answer + "\n\n" : "") + "[Error] " + err.message;
+  } finally {
+    streaming = false;
+    sendBtn.disabled = false;
+    chatInput.focus();
+  }
+}
+</script>
+</body>
+</html>
