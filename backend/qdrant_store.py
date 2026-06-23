@@ -114,6 +114,10 @@ def _positional_filter(space_id: str, hints: dict) -> Filter | None:
         must.append(FieldCondition(
             key="paragraph_index", match=MatchValue(value=hints["paragraph_index"]),
         ))
+    if "global_paragraph_index" in hints:
+        must.append(FieldCondition(
+            key="global_paragraph_index", match=MatchValue(value=hints["global_paragraph_index"]),
+        ))
     if "region" in hints:
         must.append(FieldCondition(key="region", match=MatchValue(value=hints["region"])))
     if hints.get("para_position_on_page"):
@@ -138,8 +142,8 @@ def _positional_filter(space_id: str, hints: dict) -> Filter | None:
         must.append(FieldCondition(key="page_word_start", range=Range(lte=pwt)))
         must.append(FieldCondition(key="page_word_end", range=Range(gte=pwt)))
 
-    # Paragraph-relative word (requires paragraph_index too)
-    if "para_word_target" in hints and "paragraph_index" in hints:
+    # Paragraph-relative word (requires page or document paragraph scope)
+    if "para_word_target" in hints:
         pwt = hints["para_word_target"]
         must.append(FieldCondition(key="para_word_start", range=Range(lte=pwt)))
         must.append(FieldCondition(key="para_word_end", range=Range(gte=pwt)))

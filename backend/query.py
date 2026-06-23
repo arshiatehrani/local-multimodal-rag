@@ -337,7 +337,12 @@ def _payload_to_source(pay: dict, highlight_phrases: list[str] | None = None) ->
         "file_id": pay.get("file_id", ""),
         "filename": pay.get("filename", ""),
         "page": pay.get("page", ""),
+        "total_pages": pay.get("total_pages"),
         "paragraph_index": pay.get("paragraph_index"),
+        "global_paragraph_index": pay.get("global_paragraph_index"),
+        "paragraph_count_page": pay.get("paragraph_count_page"),
+        "paragraph_count_doc": pay.get("paragraph_count_doc"),
+        "para_position_on_page": pay.get("para_position_on_page", ""),
         "word_start": pay.get("doc_word_start", pay.get("word_start")),
         "word_end": pay.get("doc_word_end", pay.get("word_end")),
         "page_word_start": pay.get("page_word_start"),
@@ -345,6 +350,8 @@ def _payload_to_source(pay: dict, highlight_phrases: list[str] | None = None) ->
         "para_word_start": pay.get("para_word_start"),
         "para_word_end": pay.get("para_word_end"),
         "doc_word_count": pay.get("doc_word_count"),
+        "page_word_count": pay.get("page_word_count"),
+        "para_word_count": pay.get("para_word_count"),
         "region": pay.get("region", ""),
         "chunk_kind": pay.get("chunk_kind", ""),
         "modality": pay.get("modality", ""),
@@ -396,7 +403,11 @@ def _should_skip_rerank(n_points: int, query: str, pos_hints: dict) -> bool:
         return False
     if pos_hints.get("wants_word_count"):
         return True
-    if pos_hints.get("paragraph_index") is not None or pos_hints.get("word_target"):
+    if (
+        pos_hints.get("paragraph_index") is not None
+        or pos_hints.get("global_paragraph_index") is not None
+        or pos_hints.get("word_target")
+    ):
         return True
     if pos_hints.get("anchor_phrase") or pos_hints.get("anchor_word"):
         return True
@@ -449,6 +460,11 @@ def _extract_word_at_hint(pay: dict, hints: dict) -> str | None:
     dws = pay.get("doc_word_start", pay.get("word_start", 1))
 
     if hints.get("para_word_target") and hints.get("paragraph_index") == pay.get("paragraph_index"):
+        idx = hints["para_word_target"] - pay.get("para_word_start", 1)
+        if 0 <= idx < len(words):
+            return words[idx]
+
+    if hints.get("para_word_target") and hints.get("global_paragraph_index") == pay.get("global_paragraph_index"):
         idx = hints["para_word_target"] - pay.get("para_word_start", 1)
         if 0 <= idx < len(words):
             return words[idx]
@@ -632,7 +648,7 @@ async def run_query(user_query: str, space_id: str, chat_id: str):
         )
         q_vec = q_vec[0]
 
-    yield _status("search", "Searching documents…")
+    yield _status("search", "Searching content…")
 
     hits = hybrid_search(q_vec, user_query, space_id, top_k=top_k_retrieve, pos_hints=pos_hints)
     hits = post_filter_hits(hits, pos_hints)
@@ -648,10 +664,10 @@ async def run_query(user_query: str, space_id: str, chat_id: str):
         return
 
     if _should_skip_rerank(n_points, user_query, pos_hints):
-        yield _status("rank", "Selecting passages…")
+        yield _status("rank", "Selecting matches…")
         reranked_hits = hits[:top_k_final]
     else:
-        yield _status("rank", "Ranking passages…")
+        yield _status("rank", "Ranking matches…")
         async with await manager.reranker() as reranker:
             docs = [_doc_text_for_rerank(h.payload) for h in hits]
             pairs = [(user_query, d) for d in docs]

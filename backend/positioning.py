@@ -170,7 +170,11 @@ def parse_position(query: str) -> dict[str, Any]:
     )
     if m:
         hints["para_word_target"] = _to_int(m.group(1))
-        hints["paragraph_index"] = _to_int(m.group(2)) - 1
+        para_num = _to_int(m.group(2))
+        if hints.get("page"):
+            hints["paragraph_index"] = para_num - 1
+        else:
+            hints["global_paragraph_index"] = para_num - 1
 
     # --- First word in a named paragraph (e.g. "first word in the submission instruction paragraph") ---
     m = re.search(r"\bfirst\s+word\s+in\s+(?:the\s+)?(.+?)\s+paragraph\b", q)
@@ -227,24 +231,37 @@ def parse_position(query: str) -> dict[str, Any]:
 
     # --- Paragraph ordinals / positions ---
     for word, idx in _ORDINALS.items():
-        if re.search(rf"\b{word}\s+paragraph\b", q) and "paragraph_index" not in hints:
-            hints["paragraph_index"] = idx - 1
+        if (
+            re.search(rf"\b{word}\s+paragraph\b", q)
+            and "paragraph_index" not in hints
+            and "global_paragraph_index" not in hints
+        ):
+            if hints.get("page"):
+                hints["paragraph_index"] = idx - 1
+            else:
+                hints["global_paragraph_index"] = idx - 1
             break
-
-    m = re.search(r"\bparagraph\s+(\d+)\b", q)
-    if m and "paragraph_index" not in hints:
-        hints["paragraph_index"] = int(m.group(1)) - 1
 
     m = re.search(r"\bparagraph\s+(\d+)\s+on\s+page\s+(\d+)\b", q)
     if m:
         hints["paragraph_index"] = int(m.group(1)) - 1
         hints["page"] = int(m.group(2))
+    else:
+        m = re.search(r"\bparagraph\s+(\d+)\b", q)
+        if m and "paragraph_index" not in hints and "global_paragraph_index" not in hints:
+            hints["global_paragraph_index"] = int(m.group(1)) - 1
 
-    if re.search(r"\bfirst\s+paragraph\b", q) and "paragraph_index" not in hints:
-        hints["paragraph_index"] = 0
-        hints["para_position_on_page"] = "first"
-    if re.search(r"\blast\s+paragraph\b", q) and "paragraph_index" not in hints:
-        hints["para_position_on_page"] = "last"
+    if re.search(r"\bfirst\s+paragraph\b", q) and "paragraph_index" not in hints and "global_paragraph_index" not in hints:
+        if hints.get("page"):
+            hints["paragraph_index"] = 0
+            hints["para_position_on_page"] = "first"
+        else:
+            hints["global_paragraph_index"] = 0
+    if re.search(r"\blast\s+paragraph\b", q) and "paragraph_index" not in hints and "global_paragraph_index" not in hints:
+        if hints.get("page"):
+            hints["para_position_on_page"] = "last"
+        else:
+            hints["global_paragraph_from_end"] = 1
 
     # --- Page positions ---
     m = re.search(r"\bpage\s+(\d+)\s+from\s+(?:the\s+)?end\b", q)
@@ -280,17 +297,21 @@ def format_position_header(meta: dict) -> str:
     if meta.get("paragraph_index") is not None:
         pi = int(meta["paragraph_index"]) + 1
         pc = meta.get("paragraph_count_page")
-        parts.append(f"para.{pi}" + (f"/{pc}" if pc else ""))
+        parts.append(f"page_para {pi}" + (f"/{pc}" if pc else ""))
+    if meta.get("global_paragraph_index") is not None:
+        gpi = int(meta["global_paragraph_index"]) + 1
+        gdc = meta.get("paragraph_count_doc")
+        parts.append(f"doc_para {gpi}" + (f"/{gdc}" if gdc else ""))
     if meta.get("para_position_on_page"):
         parts.append(f"para_{meta['para_position_on_page']}")
     if meta.get("region") and meta["region"] != "body":
         parts.append(meta["region"])
     if meta.get("doc_word_start") and meta.get("doc_word_end"):
-        parts.append(f"doc_words {meta['doc_word_start']}-{meta['doc_word_end']}")
+        parts.append(f"doc_w {meta['doc_word_start']}-{meta['doc_word_end']}")
     if meta.get("page_word_start") and meta.get("page_word_end"):
-        parts.append(f"page_words {meta['page_word_start']}-{meta['page_word_end']}")
+        parts.append(f"page_w {meta['page_word_start']}-{meta['page_word_end']}")
     if meta.get("para_word_start") and meta.get("para_word_end"):
-        parts.append(f"para_words {meta['para_word_start']}-{meta['para_word_end']}")
+        parts.append(f"para_w {meta['para_word_start']}-{meta['para_word_end']}")
     if meta.get("chunk_word_count"):
         parts.append(f"{meta['chunk_word_count']}w")
     if meta.get("chunk_kind"):
@@ -341,6 +362,26 @@ def _chunk_matches_hints(meta: dict, hints: dict) -> bool:
         pwt = hints["para_word_target"]
         pws, pwe = meta.get("para_word_start", 0), meta.get("para_word_end", 0)
         if not (pws <= pwt <= pwe):
+            return False
+
+    if hints.get("para_word_target") and hints.get("global_paragraph_index") is not None:
+        if meta.get("global_paragraph_index") != hints["global_paragraph_index"]:
+            return False
+        pwt = hints["para_word_target"]
+        pws, pwe = meta.get("para_word_start", 0), meta.get("para_word_end", 0)
+        if not (pws <= pwt <= pwe):
+            return False
+
+    if hints.get("global_paragraph_index") is not None and hints.get("para_word_target") is None:
+        if meta.get("global_paragraph_index") != hints["global_paragraph_index"]:
+            return False
+
+    if hints.get("global_paragraph_from_end"):
+        gdc = meta.get("paragraph_count_doc")
+        gpi = meta.get("global_paragraph_index")
+        if gdc is None or gpi is None:
+            return False
+        if gpi != int(gdc) - hints["global_paragraph_from_end"]:
             return False
 
     if hints.get("para_word_target") and hints.get("anchor_phrase") and hints.get("paragraph_index") is None:
@@ -405,7 +446,7 @@ def post_filter_hits(hits: list, hints: dict) -> list:
             "anchor_word", "anchor_phrase", "anchor_direction",
             "para_word_target", "doc_word_target", "page_word_target",
             "word_from_end", "page_word_from_end", "para_position_on_page",
-            "paragraph_index",
+            "paragraph_index", "global_paragraph_index", "global_paragraph_from_end",
         )
     )
     if hints.get("para_word_target") and hints.get("anchor_phrase"):
@@ -427,6 +468,8 @@ def boost_hits_by_position(hits: list, hints: dict) -> list:
         if hints.get("region") and pay.get("region") == hints["region"]:
             s += 3.0
         if hints.get("paragraph_index") is not None and pay.get("paragraph_index") == hints["paragraph_index"]:
+            s += 2.0
+        if hints.get("global_paragraph_index") is not None and pay.get("global_paragraph_index") == hints["global_paragraph_index"]:
             s += 2.0
         if hints.get("page") and pay.get("page") == hints["page"]:
             s += 1.5
@@ -458,12 +501,19 @@ def word_count_answer(hits: list, hints: dict) -> str | None:
     scope = hints.get("count_scope", "document")
 
     pay = hits[0].payload
-    if scope == "paragraph" and hints.get("paragraph_index") is not None:
-        for h in hits:
-            p = h.payload
-            if p.get("paragraph_index") == hints["paragraph_index"]:
-                pay = p
-                break
+    if scope == "paragraph":
+        if hints.get("global_paragraph_index") is not None:
+            for h in hits:
+                p = h.payload
+                if p.get("global_paragraph_index") == hints["global_paragraph_index"]:
+                    pay = p
+                    break
+        elif hints.get("paragraph_index") is not None:
+            for h in hits:
+                p = h.payload
+                if p.get("paragraph_index") == hints["paragraph_index"]:
+                    pay = p
+                    break
 
     if scope == "page" and hints.get("page"):
         for h in hits:
@@ -480,9 +530,17 @@ def word_count_answer(hits: list, hints: dict) -> str | None:
             f"(precise count at ingest)."
         )
     if scope == "paragraph" and pay.get("para_word_count"):
+        if hints.get("global_paragraph_index") is not None:
+            gpi = int(hints["global_paragraph_index"]) + 1
+            return (
+                f"Document paragraph {gpi} (page {pay.get('page', '?')}) contains "
+                f"**{pay['para_word_count']}** words (precise count at ingest)."
+            )
         pi = int(pay.get("paragraph_index", 0)) + 1
+        pc = pay.get("paragraph_count_page")
+        page_para = f"Paragraph {pi}" + (f"/{pc}" if pc else "")
         return (
-            f"Paragraph {pi} on page {pay.get('page', '?')} contains "
+            f"{page_para} on page {pay.get('page', '?')} contains "
             f"**{pay['para_word_count']}** words (precise count at ingest)."
         )
     if pay.get("doc_word_count"):

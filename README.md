@@ -15,8 +15,21 @@ isolated vector search, saved chats, and an editable system prompt. A reusable
 
 ## Table of contents
 
+- [At a glance](#at-a-glance)
 - [Features (user-facing)](#features-user-facing)
 - [Architecture overview](#architecture-overview)
+  - [System topology](#system-topology)
+  - [Runtime components](#runtime-components)
+  - [Ingest pipeline](#ingest-pipeline)
+  - [Query & RAG pipeline](#query--rag-pipeline)
+  - [Meta-question fast path](#meta-question-fast-path)
+  - [Hybrid search & reranking](#hybrid-search--reranking)
+  - [Context window & history](#context-window--history)
+  - [Positional metadata architecture](#positional-metadata-architecture)
+  - [Sources & PDF highlights](#sources--pdf-highlights)
+  - [SSE streaming protocol](#sse-streaming-protocol)
+  - [Frontend architecture](#frontend-architecture)
+  - [Model manager & warmup](#model-manager--warmup)
 - [Models & quantization](#models--quantization)
 - [VRAM usage (measured)](#vram-usage-measured)
 - [Project layout](#project-layout)
@@ -29,6 +42,25 @@ isolated vector search, saved chats, and an editable system prompt. A reusable
 - [Developer guide](#developer-guide)
 - [Configuration & tuning](#configuration--tuning)
 - [Troubleshooting](#troubleshooting)
+- [Design decisions & FAQ](#design-decisions--faq)
+- [License & models](#license--models)
+
+---
+
+## At a glance
+
+| | |
+|---|---|
+| **Stack** | FastAPI · single-page `app.html` · Qdrant · Qwen3-VL (embed / rerank / generate) |
+| **Privacy** | 100% local inference; backend binds `127.0.0.1` by default |
+| **Multimodal** | PDF text + embedded images · standalone images · video keyframes (~1 fps) |
+| **Retrieval** | Dense vectors + keyword match → RRF merge → cross-encoder rerank |
+| **Grounding** | Positional metadata per chunk · adaptive source cards · phrase PDF highlights |
+| **GPU target** | ~6 GB VRAM with all three models in NF4 4-bit (`PRELOAD_MODELS=all`) |
+
+**Typical flow:** create a Space → upload files (progress bar) → wait for **models
+ready** → chat (streaming answer + source cards) → click a source to open the PDF with
+yellow phrase highlights.
 
 ---
 
@@ -48,22 +80,26 @@ isolated vector search, saved chats, and an editable system prompt. A reusable
   welcome screen.
 - **Folder upload** — ingest every supported file in a folder in one go (unsupported
   types are skipped).
+- **Upload progress** — each file row shows a percentage bar while chunking,
+  embedding, and saving to Qdrant (SSE from `POST /spaces/{id}/files`).
 - **Multimodal** — PDFs (text + embedded page images), standalone images, and videos
   (keyframes sampled at ~1 fps).
-- **Rich positional metadata** — every text chunk records document/page/paragraph word
-  ranges, region (header/body/footer), and more (see
-  [Positional & precise queries](#positional--precise-queries)).
+- **Rich positional metadata** — every text chunk records document-, page-, and
+  paragraph-level word ranges, region (header/body/footer), and paragraph indices (see
+  [Positional metadata architecture](#positional-metadata-architecture)).
 - **Delete files** — removes vectors from Qdrant **and** the stored copy on disk.
 
 ### Chat
 
-- **Streaming answers** — responses appear token-by-token with a blinking cursor.
+- **Streaming answers** — responses appear token-by-token; a compact animated loader
+  stays visible until the first token arrives.
 - **Pipeline progress** — while loading, the assistant bubble shows live steps:
-  *Embedding query → Searching documents → Ranking passages → Preparing response →
-  Generating response*.
-- **Sources panel** — one card per passage actually sent to the generator (no fixed
-  cap). Each card shows location (`p.1 · para 3 · w 40–55`) and quoted
-  **highlight phrases** extracted from the answer.
+  *Embedding query → Searching content → Ranking matches → Preparing response →
+  Generating response*, with a step progress bar and morphing dot animation.
+- **Sources panel** — one card per chunk actually sent to the generator (no fixed
+  cap). The header adapts to content type (e.g. *text passages*, *images*, or mixed).
+  Each card shows precise location labels and quoted **highlight phrases** extracted
+  from the answer.
 - **Precise PDF highlights** — the viewer marks specific words/phrases (numbers,
   dates, answer-aligned snippets), not whole paragraphs. Asking about a number
   highlights that number in the PDF.
@@ -79,10 +115,12 @@ isolated vector search, saved chats, and an editable system prompt. A reusable
 
 ### UI
 
-- **Dark / light theme** — toggle in the Spaces sidebar footer; preference saved in
-  `localStorage`.
+- **Dark / light theme** — indigo accent palette; toggle in the Spaces sidebar footer;
+  preference saved in `localStorage`.
 - **Resizable sidebars** — drag the handles between Spaces and Chats panels; widths
   persist across sessions.
+- **Model load progress** — dual progress bars in the sidebar (overall + current model)
+  during warmup.
 - **PDF viewer** — full-screen modal with Prev/Next (cycles sources on single-page
   PDFs, pages on multi-page PDFs) and yellow phrase highlights matched to the retrieved
   chunk.
@@ -101,50 +139,416 @@ isolated vector search, saved chats, and an editable system prompt. A reusable
 
 ## Architecture overview
 
+This section is the map of the system. Each diagram shows one slice of the same
+architecture — read them together for the full picture.
+
+### System topology
+
+High-level view: browser UI, FastAPI backend, local storage, and the three-model
+inference stack.
+
 ```mermaid
 flowchart LR
   subgraph UI["frontend/app.html"]
     Upload[Upload / Chat UI]
     SSE[SSE client]
+    PDFjs[PDF.js viewer]
   end
 
-  subgraph API["backend/main.py · FastAPI"]
+  subgraph API["backend · FastAPI :8000"]
+    Main[main.py routes]
     Spaces[spaces.py]
     Ingest[ingest.py]
     Query[query.py]
     MM[model_manager.py]
+    Pos[positioning.py]
+    Ctx[rag_context.py]
+    QStore[qdrant_store.py]
   end
 
-  subgraph Store["Local storage"]
+  subgraph Models["Local GPU · NF4 4-bit"]
+    Emb[Qwen3-VL-Embedding-2B]
+    Rer[Qwen3-VL-Reranker-2B]
+    Gen[Qwen3-VL-2B-Instruct]
+  end
+
+  subgraph Store["Local persistence"]
     Disk["spaces/ · media · chats"]
-    Qdrant[(Qdrant vectors)]
+    Qdrant[(Qdrant :6333)]
   end
 
-  Upload --> Spaces
-  Upload --> Ingest
+  Upload --> Main
+  SSE --> Main
+  Main --> Spaces
+  Main --> Ingest
+  Main --> Query
   Ingest --> MM
-  Ingest --> Qdrant
+  Ingest --> QStore
   Ingest --> Disk
-  SSE --> Query
   Query --> MM
-  Query --> Qdrant
+  Query --> QStore
+  Query --> Pos
+  Query --> Ctx
   Query --> Spaces
+  MM --> Emb
+  MM --> Rer
+  MM --> Gen
+  PDFjs --> Disk
 ```
 
-**Query pipeline** (document questions):
+**Design principle:** Spaces are the isolation boundary. Every Qdrant point carries
+`space_id`; every API call is scoped to one space. Original files never leave disk —
+vectors are derived views for search.
 
-1. **Embed query** — Qwen3-VL-Embedding-2B (NF4).
-2. **Hybrid search** — dense vector search + keyword (BM25-style payload match), merged
-   with reciprocal rank fusion (RRF); filtered to the active `space_id`.
-3. **Positional boost / filter** — natural-language hints parsed in
-   [`backend/positioning.py`](backend/positioning.py).
-4. **Rerank** — Qwen3-VL-Reranker-2B (skipped only for tiny corpora + simple
+### Runtime components
+
+What runs when you execute `run.bat`:
+
+```mermaid
+flowchart TB
+  subgraph Processes
+    Docker[docker compose · Qdrant]
+    Uvicorn[uvicorn main:app · port 8000]
+    Static[python -m http.server · port 3000]
+    Browser[Browser · app.html]
+  end
+
+  Browser -->|fetch API| Uvicorn
+  Browser -->|static assets| Static
+  Uvicorn --> Docker
+  Uvicorn -->|read/write| Disk[(spaces/ qdrant_data/)]
+  Uvicorn -->|GPU| Models[3× Qwen3-VL NF4]
+```
+
+| Process | Port | Role |
+|---------|------|------|
+| Qdrant (Docker) | 6333 | Vector search + payload indexes |
+| FastAPI / uvicorn | 8000 | REST + SSE (`/chat`, file upload stream) |
+| `http.server` | 3000 | Serves `frontend/app.html` |
+| Browser | — | SPA state, SSE client, PDF.js |
+
+### Ingest pipeline
+
+Files become searchable vectors through preprocessing, chunking, embedding, and upsert.
+
+```mermaid
+flowchart TD
+  A[POST /spaces/id/files] --> B{File type}
+  B -->|PDF| C[process_pdf]
+  B -->|Image| D[process_image]
+  B -->|Video| E[process_video · ~1 fps keyframes]
+
+  C --> F[Paragraph split per page]
+  F --> G[128-word windows · 32 overlap]
+  G --> H[build_text_chunk_meta]
+  H --> I[Positional payload]
+
+  D --> J[Image chunk + thumbnail]
+  E --> J
+
+  I --> K[Embedder batch · EMBED_BATCH=4]
+  J --> K
+  K --> L[(Qdrant upsert)]
+  C --> M[(spaces/media/ original file)]
+  D --> M
+  E --> M
+
+  A -.->|SSE progress| UI[Browser progress bar]
+  K -.->|SSE progress| UI
+```
+
+**Stages emitted over SSE during upload:**
+
+| Stage | Typical `pct` | Meaning |
+|-------|---------------|---------|
+| `process` | 5–15 | Parsing PDF / extracting frames |
+| `embed` | 15–93 | Batched embedding |
+| `store` | 96 | Qdrant upsert |
+| `complete` | 100 | Done for this file |
+
+Key modules: [`backend/ingest.py`](backend/ingest.py),
+[`backend/positioning.py`](backend/positioning.py) (`build_text_chunk_meta`),
+[`backend/qdrant_store.py`](backend/qdrant_store.py) (`upsert_points`).
+
+### Query & RAG pipeline
+
+Document questions follow the full retrieval path. Events stream to the browser over
+**Server-Sent Events (SSE)** on `POST /chat`.
+
+```mermaid
+sequenceDiagram
+  participant UI as Browser
+  participant API as query.py
+  participant Pos as positioning.py
+  participant Q as Qdrant
+  participant MM as model_manager
+  participant Ctx as rag_context.py
+
+  UI->>API: POST /chat { space_id, query }
+  API->>Pos: parse_position(query)
+  API->>MM: embed query (Embedding-2B)
+  API-->>UI: status embed
+  API->>Q: hybrid search + positional filter
+  API-->>UI: status search
+  API->>MM: rerank candidates (Reranker-2B)
+  API-->>UI: status rank
+  API->>Ctx: pack_retrieval_chunks + history
+  API-->>UI: status prepare · context ring
+  API->>MM: stream generate (Instruct-2B)
+  API-->>UI: status generate · token × N
+  API->>API: _collect_sources + highlight_phrases
+  API-->>UI: sources · done
+```
+
+**Ordered steps inside `run_query`:**
+
+1. **Meta check** — greetings / capability questions may bypass RAG (see below).
+2. **Embed query** — Qwen3-VL-Embedding-2B (NF4), query instruction prompt.
+3. **Hybrid search** — dense + keyword, merged with reciprocal rank fusion (RRF);
+   filtered to active `space_id`; positional hints from `parse_position`.
+4. **Positional boost / post-filter** — re-order and refine hits
+   ([`boost_hits_by_position`](backend/positioning.py),
+   [`post_filter_hits`](backend/positioning.py)).
+5. **Rerank** — Qwen3-VL-Reranker-2B (skipped only for tiny corpora + simple
    positional/count queries, never for summaries).
-5. **Pack context** — greedy fill within the token budget; dedupe overlapping chunks.
-6. **Generate** — Qwen3-VL-2B-Instruct with grounding rules + optional space system
+6. **Pack context** — greedy fill within token budget; dedupe overlapping chunks
+   ([`rag_context.py`](backend/rag_context.py)).
+7. **Generate** — Qwen3-VL-2B-Instruct with grounding rules + optional space system
    prompt + chat history.
+8. **Collect sources** — one card per packed chunk; compute `highlight_phrases` from
+   the finished answer.
 
-Events stream to the browser over **Server-Sent Events (SSE)** on `POST /chat`.
+### Meta-question fast path
+
+Short social or capability questions should not trigger spurious PDF citations.
+
+```mermaid
+flowchart TD
+  Q[User query] --> M{_is_casual_greeting or<br/>language-capability?}
+  M -->|Yes| K{Document keywords<br/>paragraph, pdf, submit…}
+  K -->|No| Fast[Direct generator reply<br/>no Qdrant · no sources]
+  K -->|Yes| RAG[Full RAG pipeline]
+  M -->|No| RAG
+```
+
+Implemented in [`backend/query.py`](backend/query.py) (`_is_casual_greeting`,
+`_is_meta_capability_query`). Tested in [`backend/test_meta_query.py`](backend/test_meta_query.py).
+
+### Hybrid search & reranking
+
+Two retrieval signals are fused before the reranker narrows candidates.
+
+```mermaid
+flowchart LR
+  QV[Query vector] --> Dense[Dense ANN search]
+  QT[Query text] --> KW[Payload keyword match]
+  Dense --> RRF[Reciprocal Rank Fusion]
+  KW --> RRF
+  Hints[Positional hints] --> Filter[Qdrant filter]
+  Filter --> Dense
+  RRF --> Cands[Top-K candidates]
+  Cands --> Boost[Position boost]
+  Boost --> Rer[Reranker-2B]
+  Rer --> Pack[Context packer]
+```
+
+| Stage | Module | Notes |
+|-------|--------|-------|
+| Dense search | `qdrant_store.search` | Cosine on 2048-dim embeddings |
+| Keyword search | `qdrant_store._keyword_search` | `MatchText` on chunk `text` |
+| RRF merge | `qdrant_store.hybrid_search` | Combines ranked lists |
+| Positional filter | `qdrant_store._positional_filter` | page, region, word ranges, paragraph indices |
+| Rerank | `query.py` via reranker model | Always for overview queries |
+
+Dynamic depth ([`query.py`](backend/query.py) `_top_k_for_space`):
+
+| Points in space | Retrieve | Final chunks (context) |
+|-----------------|----------|-------------------------|
+| ≤ 12 | 24 | up to 8 (4 for overviews) |
+| ≤ 30 | 30 | 8 |
+| > 30 | 40 | 5 |
+
+### Context window & history
+
+The generator sees a fixed ~8k token budget split between history and retrieval.
+
+```mermaid
+flowchart TB
+  subgraph Budget["~8192 tokens (MAX_CONTEXT_TOKENS)"]
+    Hist[Chat history · up to 35%]
+    Ret[Retrieved chunks · greedy pack]
+    Resp[Reserved for response · 1024]
+  end
+
+  Hist --> Trim[Last MAX_HISTORY_TURNS turns]
+  Trim --> Sum{Over budget?}
+  Sum -->|Yes| Summary[Compact summary of older turns]
+  Sum -->|No| Keep[Recent turns as-is]
+  Ret --> Dedupe[Deduplicate overlapping chunks]
+  Dedupe --> Prompt[Final prompt to generator]
+  Keep --> Prompt
+  Summary --> Prompt
+```
+
+Ring UI updates via SSE `context` events (`used_tokens`, `budget_tokens`, `pct`).
+
+### Positional metadata architecture
+
+Each text chunk carries **three parallel coordinate systems**. Source cards label them
+explicitly so page-relative and document-relative numbers are never confused.
+
+```mermaid
+flowchart TB
+  subgraph Document
+    DP[doc para 1…N · global_paragraph_index]
+    DW[doc w 1…doc_word_count]
+  end
+
+  subgraph Page
+    PP[page para 1…M · paragraph_index]
+    PW[page w 1…page_word_count]
+  end
+
+  subgraph Paragraph
+    ParaW[para w 1…para_word_count]
+  end
+
+  PDF[PDF page text] --> PP
+  PDF --> PW
+  PDF --> DP
+  PDF --> DW
+  PP --> ParaW
+```
+
+**Example source card label:**
+
+`p.5/12 · page para 3/8 · doc para 20/156 · page w 120–124 · doc w 2695–2698 · body`
+
+| Label | Field | Meaning |
+|-------|-------|---------|
+| `p.5/12` | `page`, `total_pages` | Page 5 of 12 |
+| `page para 3/8` | `paragraph_index`, `paragraph_count_page` | 3rd paragraph **on this page** |
+| `doc para 20/156` | `global_paragraph_index`, `paragraph_count_doc` | 20th paragraph **in the document** |
+| `page w …` | `page_word_start/end` | Word range within the page |
+| `doc w …` | `doc_word_start/end` | Word range within the document |
+| `para w …` | `para_word_start/end` | Word range within the paragraph (when shown) |
+
+Natural-language queries map to the right scope — see
+[Positional & precise queries](#positional--precise-queries).
+
+### Sources & PDF highlights
+
+Sources are derived **after** generation so highlights align with the actual answer.
+
+```mermaid
+flowchart LR
+  Pack[packed_hits in context] --> Gen[Generator stream]
+  Gen --> Ans[Full answer text]
+  Ans --> Col[_collect_sources]
+  Col --> HL[_compute_highlight_phrases]
+  HL --> SSE[sources event]
+  SSE --> Cards[Source cards in UI]
+  Cards --> PDF[PDF.js yellow overlays]
+```
+
+**Highlight priority** (in [`query.py`](backend/query.py)):
+
+1. Exact positional target from parsed query
+2. Numbers and dates appearing in both answer and chunk
+3. Short answer phrases found verbatim in the chunk
+4. Query keywords present in the chunk
+
+### SSE streaming protocol
+
+Both upload and chat use the same wire format: `data: {json}\n\n` with a leading `:`
+comment to flush proxies promptly.
+
+```mermaid
+flowchart TB
+  subgraph Upload["POST /spaces/id/files"]
+    U1[progress · pct · text · stage]
+    U2[complete per file]
+    U3[done · results]
+  end
+
+  subgraph Chat["POST /chat"]
+    C1[status · step · text]
+    C2[token · text]
+    C3[context · pct · tokens]
+    C4[sources · sources array]
+    C5[done]
+  end
+```
+
+Chat pipeline steps: `embed` → `search` → `rank` → `prepare` → `generate`.
+
+### Frontend architecture
+
+Single-file SPA — no build step. State lives in JavaScript; the DOM is updated
+imperatively.
+
+```mermaid
+flowchart TB
+  subgraph Rails
+    SR[Spaces rail · list · theme · model status]
+    CR[Chats rail · list · resize handle]
+  end
+
+  subgraph Main["Main panel · tabs"]
+    Files[Files · dropzone · upload SSE]
+    Instr[Instructions · system prompt · presets]
+    Chat[Chat · input · SSE · sources · PDF modal]
+  end
+
+  subgraph ClientState
+    S[state object · spaceId · chatId · streaming]
+    LS[localStorage · theme · rail widths]
+  end
+
+  SR --> S
+  CR --> S
+  Files --> S
+  Chat --> S
+  S --> LS
+```
+
+Notable UI modules in [`frontend/app.html`](frontend/app.html):
+
+| Concern | Implementation |
+|---------|----------------|
+| Chat streaming | `createStreamingBubble`, SSE reader on `/chat` |
+| Pipeline UX | `PIPELINE_STEPS`, progress bar, morphing dot loader |
+| Upload progress | XHR + SSE parser on file upload |
+| Model warmup | Poll `/models/status`, dual progress bars |
+| PDF viewer | PDF.js, phrase highlight overlays, source carousel |
+| Themes | CSS variables `:root` / `[data-theme=light]` indigo accent |
+| Sources header | `sourcesSummarySubtitle()` — modality-aware wording |
+
+### Model manager & warmup
+
+Three models share one GPU through a warm-cache singleton with VRAM guards.
+
+```mermaid
+flowchart TD
+  Start[App lifespan] --> Pre[preload_all async task]
+  Pre --> E[Load embedder NF4]
+  E --> R[Load reranker NF4]
+  R --> G[Load generator NF4]
+  G --> Ready[status.ready = true]
+
+  Q1[Chat query] --> Lock[asyncio.Lock per model]
+  Lock --> Use[Context manager yields model]
+  Use --> Keep[Weights stay resident]
+```
+
+| `PRELOAD_MODELS` | Startup behaviour |
+|------------------|-------------------|
+| `all` (default) | Load embedder → reranker → generator sequentially |
+| `embedder` | Only embedder at startup; others on first use |
+| `none` | Skip warmup; models load on demand |
+
+Status endpoint `GET /models/status` returns `{ ready, count, total, loaded,
+loading, overall_pct, warmup_mode }` for the sidebar progress bars.
 
 ---
 
@@ -238,7 +642,7 @@ RAG/
 ├── backend/
 │   ├── main.py            # FastAPI: spaces, files, chats, prompts, /chat SSE
 │   ├── model_manager.py   # Warm-cache singleton, per-model precision, VRAM guards
-│   ├── ingest.py          # Preprocess → chunk → embed → Qdrant upsert
+│   ├── ingest.py          # Preprocess → chunk → embed → Qdrant upsert (SSE progress)
 │   ├── query.py           # Embed → hybrid search → rerank → generate (+ meta bypass)
 │   ├── qdrant_store.py    # Qdrant client, payload indexes, hybrid RRF search
 │   ├── spaces.py          # Disk persistence: spaces, media files, chats
@@ -262,6 +666,27 @@ RAG/
 
 ## How data is stored
 
+### Storage architecture
+
+```mermaid
+flowchart TB
+  subgraph Disk["spaces/ · on disk"]
+    SJ[space.json · id name system_prompt files]
+    M[media/file_id__filename · originals]
+    CJ[chats/slug__id.json · messages + sources]
+  end
+
+  subgraph Qdrant["qdrant_data/ · vectors"]
+    P[Point: vector 2048-dim]
+    PL[Payload: space_id file_id text modality<br/>doc/page/para word indices …]
+  end
+
+  SJ -->|space_id| P
+  M -->|file_id| PL
+  Delete[DELETE file or space] --> Disk
+  Delete --> Qdrant
+```
+
 ### On disk — each space
 
 ```
@@ -272,7 +697,8 @@ spaces/<folder_name>/
 ```
 
 Each chat JSON stores `{ id, title, messages[], created_at }`. Assistant messages
-include optional `sources[]` (filename, page, paragraph, chunk text, thumbnail).
+include optional `sources[]` (filename, page, positional fields, highlight phrases,
+thumbnail).
 
 Space folder names are human-readable (`test`, `my-project__a1b2c3d4`). The stable
 UUID in `space.json` is what Qdrant filters on.
@@ -281,7 +707,8 @@ UUID in `space.json` is what Qdrant filters on.
 
 - Collection: `multimodal_rag`, dimension **2048**, cosine distance.
 - Every point has `space_id` and `file_id` (keyword-indexed) plus rich payload fields
-  for hybrid and positional search.
+  for hybrid and positional search (see indexed fields in
+  [`qdrant_store.ensure_collection`](backend/qdrant_store.py)).
 - Deleting a file or space removes its vectors and disk files together.
 
 ### Prompt library
@@ -394,14 +821,14 @@ chats are scoped to the active space.
 
 - **Browse files** or **drag & drop** onto the dropzone.
 - **Select folder** to batch-ingest supported files.
-- Each row shows filename, chunk count, and status while embedding runs.
+- Each row shows filename, **percentage progress**, and stage text while embedding runs.
 - **✕** removes a file (vectors + disk copy).
 
 **Supported types:** `.pdf`, `.png`, `.jpg`, `.jpeg`, `.webp`, `.bmp`, `.tiff`,
 `.mp4`, `.mov`, `.avi`, `.mkv`.
 
 > **After upgrading chunking/positioning code**, re-upload PDFs so Qdrant points include
-> the latest metadata (`doc_words`, `para_words`, regions, etc.).
+> the latest metadata (`global_paragraph_index`, `doc_w`, `page_w`, regions, etc.).
 
 ### 3. Set instructions (Instructions tab)
 
@@ -415,9 +842,11 @@ Use **Save as preset** / **Load** to manage reusable prompts in the shared libra
 
 - Click **+** next to **Chats** or send a first message (a chat is created
   automatically).
-- Wait for **models ready** in the sidebar before sending.
-- Watch the **pipeline steps** in the assistant bubble, then the **streaming answer**.
-- Expand **Sources** below the answer; click a card to open the PDF with highlights.
+- Wait for **models ready** in the sidebar (dual progress bars during load).
+- Watch the **pipeline card** in the assistant bubble (step label + progress bar), then
+  the **streaming answer**.
+- Expand **Sources** below the answer — the subtitle reflects content types (text /
+  images / mixed). Click a card to open the PDF with highlights.
 - The **context ring** (beside the input) shows token budget usage.
 
 **Theme:** toggle Dark / Light mode in the sidebar footer.
@@ -429,8 +858,7 @@ Use **Save as preset** / **Load** to manage reusable prompts in the shared libra
 - Opens from a source card.
 - **Prev / Next** — on single-page PDFs with multiple sources, cycles sources; on
   multi-page PDFs, turns pages when only one source is active.
-- Yellow overlays mark the retrieved phrase (robust phrase matching, not tiny
-  fragment hits).
+- Yellow overlays mark retrieved phrases (robust phrase matching, not tiny fragment hits).
 
 ---
 
@@ -443,7 +871,7 @@ The generator receives:
 - Built-in rules (“answer only from context”, “never invent dates/deadlines/word limits”,
   cite positions).
 - Optional **space system prompt** from the Instructions tab.
-- **Retrieved chunks** with positional headers.
+- **Retrieved chunks** with positional headers from `format_position_header`.
 - **Chat history** (last N turns; older turns summarized if needed).
 - Optional **`[PRECISE COUNT]`** or **`[EXACT WORD AT POSITION]`** prefix lines for
   count/position questions.
@@ -459,13 +887,7 @@ a short question.
 
 ### Dynamic retrieval depth
 
-[`backend/query.py`](backend/query.py) adjusts `retrieve_k` and `final_k` by corpus size:
-
-| Points in space | Retrieve | Final chunks (context) |
-|-----------------|----------|-------------------------|
-| ≤ 12            | 24       | up to 8 (4 for overviews) |
-| ≤ 30            | 30       | 8 |
-| > 30            | 40       | 5 |
+See [Hybrid search & reranking](#hybrid-search--reranking) for the retrieve/final table.
 
 Overview questions (`what this document is about`, `summarize`, …) prefer one **full-page**
 chunk plus distinct paragraphs via `_select_overview_hits`.
@@ -477,35 +899,34 @@ positional or word-count question.
 ### Sources vs context
 
 - **Context** — all chunks that fit in the token budget after reranking (`packed_hits`).
-- **Source cards** — one per chunk in that packed context (each distinct retrieval
-  window/paragraph that contributed). Count is **adaptive**: a large doc with many
-  relevant sections can show many cards; a precise question may show fewer chunks but
-  each with tight highlights.
-- **`highlight_phrases`** — computed after the answer is generated by aligning the
-  response with each source chunk:
-  - Exact words/numbers from positional queries
-  - Numbers and dates appearing in both answer and source
-  - Short phrases from the answer found verbatim in the chunk
-  - Query keywords present in the chunk
-- Sources arrive **after** generation (with highlights), then the stream ends.
+- **Source cards** — one per chunk in that packed context. Count is **adaptive**.
+- **`highlight_phrases`** — computed after generation (see
+  [Sources & PDF highlights](#sources--pdf-highlights)).
+- Sources arrive **after** generation, then the stream ends.
 
-Cards show a preview of highlight phrases in green; clicking opens the PDF with those
-spans marked in yellow (multiple regions per page supported).
+**Sources panel header examples:**
+
+| Retrieved content | Header |
+|-------------------|--------|
+| 5 text chunks only | `Sources (5) — text passages used in the answer` |
+| 3 images only | `Sources (3) — images used in the answer` |
+| Mixed | `Sources (4) — 3 text passages and 1 image used in the answer` |
+
+Cards show highlight previews in the accent color; clicking opens the PDF with yellow
+overlays (multiple regions per page supported).
 
 **Note:** Old saved chats keep whatever sources were stored at the time. Send a new
-message to see adaptive sources and phrase highlights.
+message to see adaptive sources, updated positional labels, and phrase highlights.
 
 ### SSE event types (`POST /chat`)
 
 | Event `type` | Payload | UI effect |
 |--------------|---------|-----------|
-| `status` | `{ step, text }` | Pipeline step indicator |
+| `status` | `{ step, text }` | Pipeline step + progress bar |
 | `token` | `{ text }` | Append to streaming answer |
 | `context` | `{ used_tokens, budget_tokens, pct, summarized }` | Context ring |
 | `sources` | `{ sources: [...] }` | Source cards after answer |
 | `done` | `{}` | Finalize markdown rendering |
-
-Steps: `embed` → `search` → `rank` → `prepare` → `generate`.
 
 ---
 
@@ -514,10 +935,23 @@ Steps: `embed` → `search` → `rank` → `prepare` → `generate`.
 Natural language is parsed in [`backend/positioning.py`](backend/positioning.py) and
 applied as Qdrant filters, post-filters, and score boosts.
 
+```mermaid
+flowchart LR
+  NL[Natural language query] --> Parse[parse_position]
+  Parse --> QF[Qdrant positional filter]
+  Parse --> PF[post_filter_hits]
+  Parse --> Boost[boost_hits_by_position]
+  QF --> Hits[Filtered hits]
+  PF --> Hits
+  Boost --> Hits
+```
+
 | You say | What happens |
 |---------|----------------|
-| `second paragraph` | `paragraph_index = 1` |
-| `third word in second paragraph` | `para_word_target = 3`, `paragraph_index = 1` |
+| `second paragraph` | `global_paragraph_index = 1` (document-wide; page-scoped if `page N` is in the query) |
+| `paragraph 3 on page 5` | `paragraph_index = 2`, `page = 5` (page-relative) |
+| `paragraph 20` | `global_paragraph_index = 19` (document-wide) |
+| `third word in second paragraph` | `para_word_target = 3`, `global_paragraph_index = 1` |
 | `first word in the submission instruction paragraph` | `para_word_target = 1`, anchor phrase match |
 | `page 2` / `last page` | `page = 2` / `page_from_end = 1` |
 | `50th word` / `word 50` | chunk where `doc_word_start ≤ 50 ≤ doc_word_end` |
@@ -525,29 +959,34 @@ applied as Qdrant filters, post-filters, and score boosts.
 | `second-to-last word` | `word_from_end = 2` |
 | `word after submission` | anchor + post-filter |
 | `header` / `footer` / `title` | `region` filter |
-| `first` / `last paragraph` | `para_position_on_page` |
+| `first` / `last paragraph` on a page | `para_position_on_page` |
 | `how many words` | precise count from ingest metadata |
 
-Chunking ([`backend/ingest.py`](backend/ingest.py)):
+### Chunking rules
+
+Implemented in [`backend/ingest.py`](backend/ingest.py):
 
 - **128-word** windows, **32-word** overlap, split by PDF paragraph first.
 - **Single-page PDFs** also get a **`page_full`** chunk for broad questions.
-- PDF layout blocks infer **header / body / footer** regions.
+- PDF layout blocks infer **header / body / footer** regions via y-position.
+- Tokenizer: `\S+` regex — all word counts use the same definition as positional queries.
 
 ---
 
 ## API reference
 
+### REST endpoints
+
 | Method | Path | Purpose |
 |--------|------|---------|
 | `GET` | `/health` | Liveness |
-| `GET` | `/models/status` | Warmup progress `{ ready, count, total, loaded, warmup_mode }` |
+| `GET` | `/models/status` | Warmup progress `{ ready, count, total, loaded, loading, overall_pct, warmup_mode }` |
 | `GET` | `/spaces` | List spaces |
 | `POST` | `/spaces` | Create space `{ name }` |
 | `GET` | `/spaces/{id}` | Space metadata + files + system prompt |
 | `PATCH` | `/spaces/{id}` | Update name / `system_prompt` |
 | `DELETE` | `/spaces/{id}` | Delete space (vectors + disk) |
-| `POST` | `/spaces/{id}/files` | Upload files (multipart) |
+| `POST` | `/spaces/{id}/files` | Upload files (multipart) — **SSE stream** |
 | `DELETE` | `/spaces/{id}/files/{file_id}` | Remove file |
 | `GET` | `/spaces/{id}/files/{file_id}/raw` | Download original file |
 | `GET` | `/spaces/{id}/chats` | List chats |
@@ -559,21 +998,69 @@ Chunking ([`backend/ingest.py`](backend/ingest.py)):
 | `GET` | `/prompts/{id}` | Get preset |
 | `PATCH` | `/prompts/{id}` | Update preset |
 | `DELETE` | `/prompts/{id}` | Delete preset |
-| `POST` | `/chat` | Stream answer — body: `{ space_id, chat_id, query }` |
+| `POST` | `/chat` | Stream answer — body: `{ space_id, chat_id, query }` — **SSE stream** |
 
-Chat responses use `Content-Type: text/event-stream`. Each event is `data: {json}\n\n`.
+### SSE wire format
+
+Both streaming endpoints return `Content-Type: text/event-stream`. Each event:
+
+```
+:
+data: {"type":"token","text":"Hello"}
+```
+
+### Upload SSE events (`POST /spaces/{id}/files`)
+
+| `type` | Fields | Meaning |
+|--------|--------|---------|
+| `progress` | `pct`, `text`, `stage`, optional `file` | Per-file or batch progress |
+| `complete` | `chunks`, `pct`, `text` | One file finished |
+| `done` | `results` | All files processed |
+
+### Chat SSE events
+
+See [SSE event types](#sse-event-types-post-chat) above.
+
+### Source object shape (in `sources` event)
+
+| Field | Description |
+|-------|-------------|
+| `filename`, `file_id`, `page`, `total_pages` | Location |
+| `paragraph_index`, `global_paragraph_index` | Page vs document paragraph |
+| `paragraph_count_page`, `paragraph_count_doc` | Denominators for labels |
+| `page_word_start/end`, `word_start/end` (doc) | Word ranges |
+| `para_word_start/end` | Paragraph-relative words |
+| `region`, `chunk_kind`, `modality` | Layout / type |
+| `highlight_phrases` | Strings to mark in PDF viewer |
+| `thumbnail` | Base64 JPEG for image/video sources |
+| `text` | Chunk text preview |
 
 ---
 
 ## Developer guide
 
-### Module responsibilities
+### Module map
+
+```mermaid
+flowchart LR
+  main[main.py] --> spaces[spaces.py]
+  main --> ingest[ingest.py]
+  main --> query[query.py]
+  main --> prompts[prompts.py]
+  query --> mm[model_manager.py]
+  query --> qs[qdrant_store.py]
+  query --> pos[positioning.py]
+  query --> ctx[rag_context.py]
+  ingest --> mm
+  ingest --> qs
+  ingest --> pos
+```
 
 | Module | Role |
 |--------|------|
 | `main.py` | FastAPI routes, CORS, lifespan warmup task, SSE streaming wrapper |
 | `model_manager.py` | Load/cache embedder, reranker, generator; VRAM logging; `asyncio.Lock` |
-| `ingest.py` | PDF/image/video → chunks → batch embed → Qdrant upsert |
+| `ingest.py` | PDF/image/video → chunks → batch embed → Qdrant upsert + SSE progress |
 | `qdrant_store.py` | Collection setup, hybrid RRF search, positional filters, deletes |
 | `positioning.py` | Chunk metadata builders + `parse_position()` + post-filter/boost |
 | `query.py` | Full RAG pipeline, meta bypass, source collection, async token streaming |
@@ -592,6 +1079,7 @@ Chat responses use `Content-Type: text/event-stream`. Each event is `data: {json
 | Generation prompt / caps | `query.py` (`GEN_KWARGS`, `MAX_NEW_TOKENS`, system prompt) |
 | UI / streaming | `app.html`, `main.py` (`_sse`) |
 | Persistence | `spaces.py`, `qdrant_store.py` |
+| Source card labels | `query.py` (`_payload_to_source`), `app.html` (`sourceCardLabel`) |
 
 ### Context budget defaults
 
@@ -644,10 +1132,12 @@ Generation caps in `query.py`: `MAX_NEW_TOKENS=1024`, `SUMMARY_MAX_NEW_TOKENS=51
 | Sidebar stuck on “warming…” | Models still loading or OOM | Check backend terminal `[models]` logs; try `PRELOAD_MODELS=embedder` |
 | `backend offline` | Uvicorn not running or port blocked | Restart backend; confirm `http://127.0.0.1:8000/health` |
 | Empty / hallucinated dates | Old chunks or weak context | Re-upload PDFs; ask overview questions with rerank enabled |
-| Five identical source cards | Old chat history or pre-update behavior | Send a **new** question after restart |
+| Identical source cards | Old chat history or pre-update behavior | Send a **new** question after restart |
 | Positional answers wrong | Missing ingest metadata | Re-upload files after positioning upgrade |
+| `para N` looks wrong on source card | Old sources missing `global_paragraph_index` | Re-ask (new sources) or re-upload PDFs |
 | VRAM OOM during ingest | Image-heavy PDF spike | Reduce `EMBED_BATCH` or `MAX_IMAGE_DIM` in `ingest.py` |
 | Docker error on start | Docker Desktop not running | Start Docker, then `docker compose up -d` |
+| UI shows old wording / colors | Browser cache | Hard refresh `Ctrl+Shift+R` |
 
 ### Reset everything
 
@@ -660,6 +1150,41 @@ Then delete:
 - `./qdrant_data` — all vectors
 - `./spaces` — all files and chats
 - `./prompts` — prompt library (optional)
+
+---
+
+## Design decisions & FAQ
+
+**Why three separate models instead of one?**  
+Embedding, reranking, and generation have different input formats and batch shapes.
+Dedicated Qwen3-VL heads give better retrieval quality than a single model doing
+everything — and NF4 quantization lets all three fit on a 6 GB card.
+
+**Why hybrid search?**  
+Dense vectors catch paraphrases; keyword match catches exact tokens (numbers, names,
+rare terms). RRF merges both without calibrating a single score scale.
+
+**Why positional metadata at ingest?**  
+Word and paragraph indices are deterministic at chunk time. Storing them in the payload
+enables exact filters (“50th word”, “paragraph 3 on page 5”) without re-parsing PDFs at
+query time.
+
+**Why page para vs doc para?**  
+PDF line breaks create many short “paragraphs” per page. Users think in both page-local
+and document-global terms — showing both prevents the confusion of mixing page-relative
+paragraph numbers with document-wide word counts.
+
+**Why sources after generation?**  
+Highlight phrases are chosen from the **actual answer text**, so PDF overlays match what
+the user read — not just what was retrieved.
+
+**Why SSE instead of WebSockets?**  
+One-directional token streams and progress events map cleanly to SSE; no bidirectional
+channel is needed. Simple to proxy and debug.
+
+**Why a single `app.html`?**  
+Zero frontend build toolchain — edit, hard-refresh, done. Fits a local research tool
+where bundle size and SSR are irrelevant.
 
 ---
 
