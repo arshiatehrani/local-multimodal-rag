@@ -35,10 +35,11 @@ if errorlevel 1 (
 
 echo.
 echo [2/4] Launching backend  (http://127.0.0.1:8000) ...
-REM --reload-dir limits the file watcher to backend/ ONLY. Without it, --reload
-REM tries to watch the whole project (models/, venv/, .pip-cache/) which makes
-REM the reloader choke on Windows. Bind explicitly to loopback IPv4.
-start "RAG Backend" cmd /k ""%PY%" -m uvicorn main:app --app-dir backend --reload --reload-dir backend --host 127.0.0.1 --port 8000"
+REM NO --reload here on purpose: this is a "use the app" launcher, not a dev
+REM server. On Windows --reload makes WatchFiles try to watch the whole project
+REM (venv/, models/, .pip-cache/), which pegs the process and makes it
+REM unresponsive ("offline" even though it bound the port). Bind to loopback IPv4.
+start "RAG Backend" cmd /k ""%PY%" -m uvicorn main:app --app-dir backend --host 127.0.0.1 --port 8000"
 
 echo [3/4] Launching frontend (http://127.0.0.1:3000) ...
 start "RAG Frontend" cmd /k ""%PY%" -m http.server 3000 --bind 127.0.0.1 --directory frontend"
