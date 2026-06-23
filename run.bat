@@ -33,6 +33,20 @@ if errorlevel 1 (
     exit /b 1
 )
 
+echo Waiting for Qdrant to be ready (can take ~30s after a restart)...
+set /a qtries=0
+:qdrantwait
+set /a qtries+=1
+if %qtries% gtr 45 (
+    echo [WARN] Qdrant did not respond on port 6333. Backend may fail to start.
+    goto backendstart
+)
+timeout /t 2 /nobreak >nul
+curl -s -o nul http://127.0.0.1:6333/
+if errorlevel 1 goto qdrantwait
+echo Qdrant is up.
+
+:backendstart
 echo.
 echo [2/4] Launching backend  (http://127.0.0.1:8000) ...
 REM NO --reload here on purpose: this is a "use the app" launcher, not a dev

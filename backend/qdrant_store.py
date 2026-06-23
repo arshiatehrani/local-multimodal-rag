@@ -1,6 +1,7 @@
 """Qdrant connection, collection setup, hybrid search, and CRUD helpers."""
 
 import os
+import time
 import uuid
 
 from qdrant_client import QdrantClient
@@ -23,10 +24,41 @@ DIM = 2048
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
 
-client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
+client = QdrantClient(
+    host=QDRANT_HOST,
+    port=QDRANT_PORT,
+    check_compatibility=False,
+)
 
 
-def ensure_collection():
+def ensure_collection(max_attempts: int = 45, retry_delay: float = 2.0):
+    """Wait for Qdrant to accept connections, then ensure collection + indexes exist."""
+    last_err: Exception | None = None
+    for attempt in range(max_attempts):
+        try:
+            _ensure_collection_once()
+            if attempt > 0:
+                print(
+                    f"[qdrant] ready after {attempt + 1} attempt(s)",
+                    flush=True,
+                )
+            return
+        except Exception as exc:
+            last_err = exc
+            if attempt < max_attempts - 1:
+                print(
+                    f"[qdrant] waiting for Qdrant at {QDRANT_HOST}:{QDRANT_PORT} "
+                    f"({attempt + 1}/{max_attempts})…",
+                    flush=True,
+                )
+                time.sleep(retry_delay)
+    raise RuntimeError(
+        f"Could not connect to Qdrant at {QDRANT_HOST}:{QDRANT_PORT}. "
+        "Start Docker and run: docker compose up -d"
+    ) from last_err
+
+
+def _ensure_collection_once():
     existing = [c.name for c in client.get_collections().collections]
     if COLLECTION not in existing:
         client.create_collection(
