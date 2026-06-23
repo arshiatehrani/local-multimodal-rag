@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -8,18 +8,37 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
 <style>
-  :root {
-    --bg: #0f0f0f;
-    --surface: #1a1a1a;
-    --surface-2: #202020;
-    --border: #2a2a2a;
-    --text: #ededed;
-    --text-dim: #8b8b8b;
-    --accent: #14b8a6;
-    --accent-dim: #0d8276;
-    --user-bubble: #14b8a6;
+  :root,
+  [data-theme="dark"] {
+    --bg: #212121;
+    --surface: #171717;
+    --surface-2: #2f2f2f;
+    --border: #424242;
+    --text: #ececf1;
+    --text-dim: #9b9b9b;
+    --accent: #10a37f;
+    --accent-dim: #0d8c6d;
+    --user-bubble: #303030;
+    --user-text: #ececf1;
     --danger: #ef4444;
     --radius: 12px;
+    --pdf-overlay: rgba(0, 0, 0, 0.85);
+    --input-bg: #2f2f2f;
+  }
+  [data-theme="light"] {
+    --bg: #ffffff;
+    --surface: #f7f7f8;
+    --surface-2: #ffffff;
+    --border: #e5e5e5;
+    --text: #0d0d0d;
+    --text-dim: #676767;
+    --accent: #10a37f;
+    --accent-dim: #0d8c6d;
+    --user-bubble: #f4f4f4;
+    --user-text: #0d0d0d;
+    --danger: #dc2626;
+    --pdf-overlay: rgba(0, 0, 0, 0.55);
+    --input-bg: #ffffff;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { height: 100%; }
@@ -86,10 +105,10 @@
   .welcome { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; color: var(--text-dim); }
   .welcome .icon { font-size: 44px; opacity: .6; }
   .btn-primary {
-    background: var(--accent); color: #04201d; border: none; border-radius: 10px;
+    background: var(--accent); color: #fff; border: none; border-radius: 10px;
     padding: 11px 20px; font-weight: 600; cursor: pointer; font-family: inherit; transition: background .15s ease;
   }
-  .btn-primary:hover { background: var(--accent-dim); color: #d6fffb; }
+  .btn-primary:hover { background: var(--accent-dim); }
 
   /* Files view */
   .files-body { padding: 26px 28px; overflow-y: auto; }
@@ -151,7 +170,7 @@
   .msg { max-width: 760px; margin: 0 auto 22px; display: flex; }
   .msg.user { justify-content: flex-end; }
   .bubble { padding: 12px 16px; border-radius: 14px; line-height: 1.55; white-space: pre-wrap; word-wrap: break-word; max-width: 80%; }
-  .msg.user .bubble { background: var(--user-bubble); color: #04201d; border-bottom-right-radius: 4px; font-weight: 500; }
+  .msg.user .bubble { background: var(--user-bubble); color: var(--user-text); border-bottom-right-radius: 4px; font-weight: 500; }
   .msg.assistant .bubble { background: var(--surface); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
   .msg.assistant .bubble strong { font-weight: 700; }
   .msg.assistant .bubble ul { margin: 8px 0 8px 20px; }
@@ -171,32 +190,50 @@
   .source-card .meta { padding: 8px; font-size: 11px; }
   .source-card .meta .fn { font-weight: 500; word-break: break-all; }
   .source-card .meta .pg { color: var(--text-dim); margin-top: 2px; }
-  .badge { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 4px; background: var(--accent-dim); color: #d6fffb; margin-top: 4px; }
+  .badge { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 4px; background: var(--accent-dim); color: #fff; margin-top: 4px; }
+  .theme-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+  .theme-toggle {
+    background: var(--surface-2); border: 1px solid var(--border); color: var(--text);
+    border-radius: 8px; padding: 5px 10px; font-size: 12px; cursor: pointer; font-family: inherit;
+  }
+  .theme-toggle:hover { border-color: var(--accent); color: var(--accent); }
 
-  /* Composer */
   .composer { border-top: 1px solid var(--border); padding: 16px 28px; }
   .composer-inner { max-width: 760px; margin: 0 auto; display: flex; gap: 10px; align-items: flex-end; }
+  .context-ring {
+    flex-shrink: 0; width: 36px; height: 36px; position: relative;
+    display: flex; align-items: center; justify-content: center;
+    cursor: default; align-self: flex-end; margin-bottom: 4px;
+  }
+  .context-ring svg { width: 36px; height: 36px; transform: rotate(-90deg); }
+  .context-ring .track { fill: none; stroke: var(--border); stroke-width: 3; }
+  .context-ring .fill { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linecap: round; transition: stroke-dashoffset .3s ease, stroke .3s ease; }
+  .context-ring.warn .fill { stroke: #eab308; }
+  .context-ring.full .fill { stroke: var(--danger); }
+  .context-ring .pct-label { position: absolute; font-size: 9px; color: var(--text-dim); font-weight: 600; transform: rotate(0deg); }
   textarea#chatInput {
-    flex: 1; resize: none; background: var(--surface); color: var(--text);
+    flex: 1; resize: none; background: var(--input-bg); color: var(--text);
     border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px;
     font-family: inherit; font-size: 14px; line-height: 1.4; max-height: 160px; transition: border-color .15s ease;
   }
   textarea#chatInput:focus { outline: none; border-color: var(--accent); }
   textarea#chatInput:disabled { opacity: .5; }
   button.send {
-    background: var(--accent); color: #04201d; border: none; border-radius: 12px;
+    background: var(--accent); color: #fff; border: none; border-radius: 12px;
     padding: 12px 20px; font-weight: 600; cursor: pointer; font-family: inherit; transition: background .15s ease, opacity .15s ease;
   }
-  button.send:hover { background: var(--accent-dim); color: #d6fffb; }
+  button.send:hover { background: var(--accent-dim); }
   button.send:disabled { opacity: .5; cursor: not-allowed; }
 
   /* PDF viewer modal */
-  .pdf-modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.85); z-index: 1000; flex-direction: column; }
+  .pdf-modal { display: none; position: fixed; inset: 0; background: var(--pdf-overlay); z-index: 1000; flex-direction: column; }
   .pdf-modal.open { display: flex; }
   .pdf-toolbar { display: flex; align-items: center; gap: 12px; padding: 12px 18px; background: var(--surface); border-bottom: 1px solid var(--border); }
   .pdf-toolbar .title { flex: 1; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .pdf-toolbar button { background: var(--surface-2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 6px 12px; cursor: pointer; font-family: inherit; }
   .pdf-toolbar button:hover { border-color: var(--accent); color: var(--accent); }
+  .pdf-toolbar button:disabled { opacity: 0.35; cursor: not-allowed; }
+  .pdf-toolbar button:disabled:hover { border-color: var(--border); color: var(--text); }
   .pdf-body { flex: 1; overflow: auto; display: flex; justify-content: center; padding: 20px; position: relative; }
   .pdf-page-wrap { position: relative; display: inline-block; }
   .pdf-page-wrap canvas { display: block; box-shadow: 0 4px 24px rgba(0,0,0,.5); }
@@ -215,6 +252,10 @@
     </div>
     <div class="list" id="spaceList"></div>
     <div class="sidebar-footer">
+      <div class="theme-row">
+        <span>Theme</span>
+        <button type="button" class="theme-toggle" id="themeToggle" title="Toggle light/dark mode">Light mode</button>
+      </div>
       <div class="status-pill" id="statusPill"><span class="dot"></span> <span id="statusText">checking...</span></div>
     </div>
   </aside>
@@ -301,6 +342,14 @@
           </div>
           <div class="composer">
             <div class="composer-inner">
+              <div class="context-ring" id="contextRing" title="Context window">
+                <svg viewBox="0 0 36 36">
+                  <circle class="track" cx="18" cy="18" r="15.5"/>
+                  <circle class="fill" id="contextFill" cx="18" cy="18" r="15.5"
+                    stroke-dasharray="97.4" stroke-dashoffset="97.4"/>
+                </svg>
+                <span class="pct-label" id="contextPct"></span>
+              </div>
               <textarea id="chatInput" rows="1" placeholder="Ask a question..."></textarea>
               <button class="send" id="sendBtn">Send</button>
             </div>
@@ -313,9 +362,9 @@
   <div class="pdf-modal" id="pdfModal">
     <div class="pdf-toolbar">
       <span class="title" id="pdfTitle">Document</span>
-      <button type="button" id="pdfPrev">Prev</button>
+      <button type="button" id="pdfPrev" title="Previous source or page">Prev</button>
       <span id="pdfPageInfo">1 / 1</span>
-      <button type="button" id="pdfNext">Next</button>
+      <button type="button" id="pdfNext" title="Next source or page">Next</button>
       <button type="button" id="pdfClose">Close</button>
     </div>
     <div class="pdf-body" id="pdfBody">
@@ -330,11 +379,30 @@
 const API = "http://127.0.0.1:8000";
 const SUPPORTED = [".pdf",".png",".jpg",".jpeg",".webp",".bmp",".tiff",".mp4",".mov",".avi",".mkv"];
 const STORAGE_KEY = "multimodal_rag_state";
+const THEME_KEY = "multimodal_rag_theme";
 
 const state = { spaceId: null, space: null, chatId: null, streaming: false, tab: "files" };
 
 if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc =
   "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+function setTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  localStorage.setItem(THEME_KEY, theme);
+  const btn = document.getElementById("themeToggle");
+  if (btn) btn.textContent = theme === "light" ? "Dark mode" : "Light mode";
+}
+
+function initTheme() {
+  const saved = localStorage.getItem(THEME_KEY);
+  setTheme(saved === "light" ? "light" : "dark");
+}
+
+document.getElementById("themeToggle").addEventListener("click", () => {
+  const cur = document.documentElement.getAttribute("data-theme") || "dark";
+  setTheme(cur === "light" ? "dark" : "light");
+});
+initTheme();
 
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
@@ -349,6 +417,25 @@ function renderMarkdown(text) {
   s = s.replace(/\n/g, "<br>");
   return s;
 }
+function updateContextRing(data) {
+  const ring = document.getElementById("contextRing");
+  const fill = document.getElementById("contextFill");
+  const label = document.getElementById("contextPct");
+  if (!ring || !fill) return;
+  const pct = Math.min(100, data.pct || 0);
+  const circ = 97.4;
+  fill.style.strokeDashoffset = String(circ * (1 - pct / 100));
+  ring.classList.toggle("warn", pct >= 70 && pct < 90);
+  ring.classList.toggle("full", pct >= 90);
+  label.textContent = pct >= 15 ? pct + "%" : "";
+  const sum = data.summarized ? " (older chat summarized)" : "";
+  ring.title = `Context: ${data.used_tokens} / ${data.budget_tokens} tokens (${pct}% full)${sum}`;
+}
+
+function resetContextRing() {
+  updateContextRing({ pct: 0, used_tokens: 0, budget_tokens: 8192 });
+}
+
 function persistState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify({
     spaceId: state.spaceId, chatId: state.chatId, tab: state.tab,
@@ -714,7 +801,7 @@ async function selectChat(id) {
     chat = await r.json();
   } catch { return; }
   chatScroll.innerHTML = "";
-  if (!chat.messages || !chat.messages.length) { resetChatView(); persistState(); return; }
+  if (!chat.messages || !chat.messages.length) { resetChatView(); resetContextRing(); persistState(); return; }
   for (const m of chat.messages) {
     addBubble(m.role, m.content, m.role === "assistant");
     if (m.role === "assistant" && m.sources) renderSources(m.sources);
@@ -739,19 +826,144 @@ function addBubble(role, text, asMarkdown) {
 
 /* ---------- PDF source viewer ---------- */
 let pdfDoc = null, pdfPageNum = 1, pdfHighlightText = "";
+let pdfSources = [], pdfSourceIdx = 0, pdfFileId = null;
 
-async function openPdfSource(source) {
+function normalizeForMatch(s) {
+  return String(s || "")
+    .toLowerCase()
+    .replace(/[\u200c\u200d]/g, "")
+    .replace(/[^\w\s\u0600-\u06FF]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function pickHighlightText(source) {
+  let text = (source.text || "").trim();
+  if (!text) return "";
+  const words = text.split(/\s+/);
+  if (source.word_start && source.word_end && words.length > 0) {
+    const ws = Math.max(0, source.word_start - 1);
+    const we = Math.min(words.length, source.word_end);
+    if (we - ws >= 4) text = words.slice(ws, we).join(" ");
+  }
+  const fn = (source.filename || "").replace(/\.[^.]+$/, "").replace(/[-_]/g, " ").toLowerCase();
+  const norm = normalizeForMatch(text);
+  if (fn.length > 8 && norm.startsWith(fn.slice(0, Math.min(fn.length, 24)))) {
+    text = words.slice(Math.min(10, Math.floor(words.length / 3))).join(" ");
+  }
+  return text;
+}
+
+function findMatchRange(pageNorm, chunkNorm) {
+  if (!pageNorm || !chunkNorm) return null;
+  const minLen = 16;
+  const maxTry = Math.min(200, chunkNorm.length);
+  for (let len = maxTry; len >= minLen; len -= 4) {
+    for (const off of [0, Math.floor(chunkNorm.length / 4), Math.floor(chunkNorm.length / 2)]) {
+      if (off + len > chunkNorm.length) continue;
+      const sub = chunkNorm.slice(off, off + len);
+      const pos = pageNorm.indexOf(sub);
+      if (pos >= 0) return { start: pos, end: pos + len };
+    }
+  }
+  const words = chunkNorm.split(" ").filter(w => w.length > 3);
+  for (let n = Math.min(10, words.length); n >= 3; n--) {
+    for (let i = 0; i <= words.length - n; i++) {
+      const sub = words.slice(i, i + n).join(" ");
+      const pos = pageNorm.indexOf(sub);
+      if (pos >= 0) return { start: pos, end: pos + sub.length };
+    }
+  }
+  return null;
+}
+
+async function applyPdfHighlights(page, viewport, hlLayer, chunkText) {
+  hlLayer.innerHTML = "";
+  const chunkNorm = normalizeForMatch(chunkText);
+  if (!chunkNorm) return;
+
+  const textContent = await page.getTextContent();
+  const scale = viewport.scale;
+  let pageNorm = "";
+  const spans = [];
+
+  for (const item of textContent.items) {
+    const raw = (item.str || "").trim();
+    if (!raw) continue;
+    const norm = normalizeForMatch(raw);
+    if (!norm) continue;
+    const start = pageNorm.length;
+    pageNorm += (pageNorm ? " " : "") + norm;
+    const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
+    const h = Math.sqrt(tx[2] * tx[2] + tx[3] * tx[3]);
+    spans.push({ start, end: pageNorm.length, tx, h, w: item.width * scale });
+  }
+
+  const range = findMatchRange(pageNorm, chunkNorm);
+  if (!range) return;
+
+  for (const sp of spans) {
+    if (sp.end <= range.start || sp.start >= range.end) continue;
+    const div = document.createElement("div");
+    div.className = "hl";
+    div.style.left = `${sp.tx[4]}px`;
+    div.style.top = `${sp.tx[5] - sp.h}px`;
+    div.style.width = `${Math.max(sp.w, 4)}px`;
+    div.style.height = `${sp.h + 2}px`;
+    hlLayer.appendChild(div);
+  }
+}
+
+function updatePdfToolbar() {
+  const prev = document.getElementById("pdfPrev");
+  const next = document.getElementById("pdfNext");
+  const info = document.getElementById("pdfPageInfo");
+  const canPrevSrc = pdfSourceIdx > 0;
+  const canNextSrc = pdfSourceIdx < pdfSources.length - 1;
+  const canPrevPage = pdfDoc && pdfPageNum > 1;
+  const canNextPage = pdfDoc && pdfPageNum < pdfDoc.numPages;
+
+  prev.disabled = !canPrevSrc && !canPrevPage;
+  next.disabled = !canNextSrc && !canNextPage;
+
+  let label = "";
+  if (pdfSources.length > 1) label += `Source ${pdfSourceIdx + 1}/${pdfSources.length}`;
+  if (pdfDoc) {
+    const pagePart = pdfDoc.numPages > 1
+      ? `Page ${pdfPageNum}/${pdfDoc.numPages}`
+      : (pdfSources.length > 1 ? `p.${pdfPageNum}` : `Page ${pdfPageNum}/${pdfDoc.numPages}`);
+    label += (label ? " · " : "") + pagePart;
+  }
+  info.textContent = label || "1 / 1";
+}
+
+async function loadPdfSourceAt(idx) {
+  const source = pdfSources[idx];
+  if (!source) return;
+  pdfSourceIdx = idx;
+  pdfHighlightText = pickHighlightText(source);
+  pdfPageNum = parseInt(source.page, 10) || 1;
+  document.getElementById("pdfTitle").textContent = source.filename || "Document";
+
   if (!source.file_id || !state.spaceId || !window.pdfjsLib) {
     window.open(`${API}/spaces/${state.spaceId}/files/${source.file_id}/raw`, "_blank");
     return;
   }
+
   const url = `${API}/spaces/${state.spaceId}/files/${source.file_id}/raw`;
-  pdfHighlightText = (source.text || "").trim().slice(0, 200);
-  pdfPageNum = parseInt(source.page, 10) || 1;
-  document.getElementById("pdfTitle").textContent = source.filename || "Document";
-  document.getElementById("pdfModal").classList.add("open");
-  pdfDoc = await pdfjsLib.getDocument(url).promise;
+  if (pdfFileId !== source.file_id) {
+    pdfFileId = source.file_id;
+    pdfDoc = await pdfjsLib.getDocument(url).promise;
+  }
   await renderPdfPage();
+  updatePdfToolbar();
+}
+
+async function openPdfSource(source, sources, index) {
+  pdfSources = sources && sources.length ? sources : [source];
+  pdfSourceIdx = typeof index === "number" ? index : 0;
+  document.getElementById("pdfModal").classList.add("open");
+  await loadPdfSourceAt(pdfSourceIdx);
 }
 
 async function renderPdfPage() {
@@ -764,39 +976,33 @@ async function renderPdfPage() {
   canvas.width = viewport.width;
   canvas.height = viewport.height;
   await page.render({ canvasContext: ctx, viewport }).promise;
-  document.getElementById("pdfPageInfo").textContent = `${pdfPageNum} / ${pdfDoc.numPages}`;
 
   const hlLayer = document.getElementById("pdfHlLayer");
-  hlLayer.innerHTML = "";
-  if (!pdfHighlightText) return;
-  const textContent = await page.getTextContent();
-  const needle = pdfHighlightText.replace(/\s+/g, " ").slice(0, 80).toLowerCase();
-  for (const item of textContent.items) {
-    const t = (item.str || "").trim();
-    if (!t || t.length < 4) continue;
-    if (!needle.includes(t.toLowerCase()) && !t.toLowerCase().includes(needle.slice(0, 30))) continue;
-    const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
-    const h = Math.sqrt(tx[2] * tx[2] + tx[3] * tx[3]);
-    const w = item.width * scale;
-    const div = document.createElement("div");
-    div.className = "hl";
-    div.style.left = `${tx[4]}px`;
-    div.style.top = `${tx[5] - h}px`;
-    div.style.width = `${w}px`;
-    div.style.height = `${h + 2}px`;
-    hlLayer.appendChild(div);
-  }
+  await applyPdfHighlights(page, viewport, hlLayer, pdfHighlightText);
+  updatePdfToolbar();
 }
 
 document.getElementById("pdfClose").addEventListener("click", () => {
   document.getElementById("pdfModal").classList.remove("open");
   pdfDoc = null;
+  pdfFileId = null;
+  pdfSources = [];
 });
 document.getElementById("pdfPrev").addEventListener("click", async () => {
-  if (pdfDoc && pdfPageNum > 1) { pdfPageNum--; await renderPdfPage(); }
+  if (pdfSourceIdx > 0) {
+    await loadPdfSourceAt(pdfSourceIdx - 1);
+  } else if (pdfDoc && pdfPageNum > 1) {
+    pdfPageNum--;
+    await renderPdfPage();
+  }
 });
 document.getElementById("pdfNext").addEventListener("click", async () => {
-  if (pdfDoc && pdfPageNum < pdfDoc.numPages) { pdfPageNum++; await renderPdfPage(); }
+  if (pdfSourceIdx < pdfSources.length - 1) {
+    await loadPdfSourceAt(pdfSourceIdx + 1);
+  } else if (pdfDoc && pdfPageNum < pdfDoc.numPages) {
+    pdfPageNum++;
+    await renderPdfPage();
+  }
 });
 
 function renderSources(sources) {
@@ -807,7 +1013,7 @@ function renderSources(sources) {
     <summary>&#9656; Sources (${sources.length}) — click to open</summary>
     <div class="source-grid"></div></details>`;
   const grid = wrap.querySelector(".source-grid");
-  for (const s of sources) {
+  sources.forEach((s, i) => {
     const card = document.createElement("div");
     card.className = "source-card";
     card.title = "Open in viewer";
@@ -823,9 +1029,9 @@ function renderSources(sources) {
       <div class="pg">page ${escapeHtml(s.page)}</div>
       <span class="badge">${escapeHtml(s.modality)}</span>`;
     card.appendChild(meta);
-    card.addEventListener("click", () => openPdfSource(s));
+    card.addEventListener("click", () => openPdfSource(s, sources, i));
     grid.appendChild(card);
-  }
+  });
   chatScroll.appendChild(wrap);
   chatScroll.scrollTop = chatScroll.scrollHeight;
 }
@@ -897,6 +1103,8 @@ async function sendMessage() {
           bubble.textContent = answer;
           bubble.appendChild(cursor);
           chatScroll.scrollTop = chatScroll.scrollHeight;
+        } else if (data.type === "context") {
+          updateContextRing(data);
         } else if (data.type === "sources") {
           pendingSources = data.sources;
         } else if (data.type === "done") {
@@ -922,6 +1130,7 @@ async function sendMessage() {
 
 /* ---------- Init ---------- */
 async function init() {
+  resetContextRing();
   await loadSpaces();
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");

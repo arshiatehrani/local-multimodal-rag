@@ -279,7 +279,7 @@ async def chat_endpoint(req: ChatRequest):
     async def stream():
         spaces.append_message(req.space_id, req.chat_id, "user", req.query)
         answer_parts, sources = [], []
-        async for ev in run_query(req.query, req.space_id):
+        async for ev in run_query(req.query, req.space_id, req.chat_id):
             if ev["type"] == "token":
                 answer_parts.append(ev["text"])
             elif ev["type"] == "sources":

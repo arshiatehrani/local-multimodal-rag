@@ -302,10 +302,35 @@ downscales large images to a max dimension of 1024 px before embedding
   bf16/fp32 if unavailable.
 - **System prompt**: per-space instructions are appended to the base grounding
   prompt in [`backend/query.py`](backend/query.py); presets live in `prompts/`.
-- **Chunking**: 256-word chunks with 64-word overlap
-  ([`backend/ingest.py`](backend/ingest.py)).
-- **Retrieval**: top-20 vector search (filtered to the active space) → rerank →
-  top-5 to the generator ([`backend/query.py`](backend/query.py)).
+- **Chunking**: 128-word windows with 32-word overlap; PDFs are split by paragraph
+  first, with a **whole-page** chunk added for single-page PDFs. Each chunk stores rich
+  positional metadata via [`backend/positioning.py`](backend/positioning.py):
+  `doc_words`, `page_words`, `para_words` (all 1-indexed), `doc/page/para_word_count`,
+  `region` (header/body/footer from PDF layout), `page_position`, `para_position_on_page`,
+  `first_word` / `last_word`, `leading_words` / `trailing_words`. **Re-upload files**
+  after upgrading — old vectors lack this metadata.
+- **Retrieval**: hybrid **vector + keyword** search (RRF merge), positional filters and
+  post-filtering from natural language ([`backend/positioning.py`](backend/positioning.py)):
+
+  | You say | What happens |
+  |---------|----------------|
+  | second paragraph | `paragraph_index = 1` |
+  | third word in second paragraph | `para_word_target = 3`, `paragraph_index = 1` |
+  | page 2 / last page | `page = 2` / `page_from_end = 1` |
+  | 50th word / word 50 | chunk where `doc_word_start ≤ 50 ≤ doc_word_end` |
+  | 3rd word on the page | `page_word_target = 3` |
+  | second-to-last word | `word_from_end = 2` |
+  | word after submission | keyword + post-filter for anchor |
+  | word before due | keyword + post-filter for anchor |
+  | header / footer / title | `region` filter |
+  | first / last paragraph | `para_position_on_page` |
+  | how many words | precise count from ingest metadata |
+
+  Rerank, then dynamic top-k (up to **10** chunks for small spaces) in
+  [`backend/query.py`](backend/query.py).
+- **Chat context**: last N turns are passed to the generator; when the ~8k token
+  budget fills, older turns are compact-summarized ([`backend/rag_context.py`](backend/rag_context.py)).
+  The chat UI shows a **context ring** (used / remaining tokens) via SSE `context` events.
 - **Empty-space fast path**: if a space has no vectors yet, chat answers instantly
   without loading any model.
 - **Embedding dim**: 2048 (must match the Qdrant collection in `qdrant_store.py`).

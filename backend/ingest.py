@@ -6,6 +6,7 @@ Supports PDFs (text chunks + embedded images), standalone images, and videos
 
 import io
 import os
+import re
 import base64
 import tempfile
 from pathlib import Path
@@ -14,12 +15,19 @@ from PIL import Image
 import fitz  # pymupdf
 
 from model_manager import manager
+from positioning import (
+    build_text_chunk_meta,
+    tokenize_words,
+    word_count,
+    region_from_y,
+)
 from qdrant_store import ensure_collection, upsert_points
 
-CHUNK_SIZE = 256      # words per chunk (proxy for tokens)
-CHUNK_OVERLAP = 64    # words of overlap between chunks
+CHUNK_SIZE = 128      # words per chunk (smaller windows for finer retrieval)
+CHUNK_OVERLAP = 32    # words of overlap between chunks
 EMBED_BATCH = 4       # small batches keep activation memory low on 6 GB GPUs
 MAX_IMAGE_DIM = 1024  # downscale large images before embedding to cap VRAM use
+MIN_CHUNK_CHARS = 20
 
 DOC_INSTRUCTION = "Represent the content for retrieval."
 
@@ -52,7 +60,85 @@ def chunk_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) 
     while i < len(words):
         chunks.append(" ".join(words[i:i + size]))
         i += step
-    return [c for c in chunks if len(c.strip()) > 20]
+    return [c for c in chunks if len(c.strip()) > MIN_CHUNK_CHARS]
+
+
+def _paragraphs_from_page(page) -> list[dict]:
+    """Split page into paragraphs with layout region (header/body/footer)."""
+    page_height = float(page.rect.height) or 1.0
+    text = page.get_text("text") or ""
+    raw_parts = [p.strip() for p in re.split(r"\n\s*\n+", text) if p.strip()]
+
+    blocks = page.get_text("blocks") or []
+    block_regions: list[tuple[str, str]] = []
+    for b in blocks:
+        if len(b) < 5 or b[6] != 0:
+            continue
+        t = (b[4] or "").strip()
+        if not t:
+            continue
+        y_mid = (float(b[1]) + float(b[3])) / 2.0
+        block_regions.append((t, region_from_y(y_mid, page_height)))
+
+    if len(raw_parts) > 1:
+        paragraphs = []
+        for part in raw_parts:
+            region = "body"
+            for bt, br in block_regions:
+                if part.startswith(bt[: min(40, len(bt))]) or bt in part:
+                    region = br
+                    break
+            if region == "body" and block_regions:
+                for bt, br in block_regions:
+                    if bt == part or part in bt:
+                        region = br
+                        break
+            paragraphs.append({"text": part, "region": region})
+        return paragraphs
+
+    if block_regions:
+        return [{"text": t, "region": r} for t, r in block_regions]
+
+    return [{"text": text.strip(), "region": "body"}] if text.strip() else []
+
+
+def _make_text_item(
+    content: str,
+    filename: str,
+    page: int,
+    total_pages: int,
+    paragraph_index: int,
+    global_paragraph_index: int,
+    paragraph_count_page: int,
+    paragraph_count_doc: int,
+    region: str,
+    chunk_kind: str,
+    doc_word_start: int,
+    page_word_start: int,
+    para_word_start: int,
+    page_word_count: int | None = None,
+    doc_word_count: int | None = None,
+    para_word_count: int | None = None,
+) -> dict:
+    meta = build_text_chunk_meta(
+        content=content,
+        filename=filename,
+        page=page,
+        total_pages=total_pages,
+        paragraph_index=paragraph_index,
+        global_paragraph_index=global_paragraph_index,
+        paragraph_count_page=paragraph_count_page,
+        paragraph_count_doc=paragraph_count_doc,
+        region=region,
+        chunk_kind=chunk_kind,
+        doc_word_start=doc_word_start,
+        page_word_start=page_word_start,
+        para_word_start=para_word_start,
+        page_word_count=page_word_count,
+        doc_word_count=doc_word_count,
+        para_word_count=para_word_count,
+    )
+    return {"type": "text", "content": content, "meta": meta}
 
 
 def _thumbnail_b64(pil_img: Image.Image) -> str:
@@ -66,14 +152,79 @@ def _thumbnail_b64(pil_img: Image.Image) -> str:
 def process_pdf(file_bytes: bytes, filename: str) -> list:
     items = []
     doc = fitz.open(stream=file_bytes, filetype="pdf")
+    total_pages = len(doc)
+    doc_word_cursor = 0
+    global_para_idx = 0
+
+    # First pass: count paragraphs for doc-level stats.
+    page_paragraphs: list[list[dict]] = []
+    for page_num in range(total_pages):
+        page_paragraphs.append(_paragraphs_from_page(doc[page_num]))
+    paragraph_count_doc = sum(len(p) for p in page_paragraphs)
+
     for page_num, page in enumerate(doc):
-        text = page.get_text("text")
-        for chunk in chunk_text(text):
-            items.append({
-                "type": "text",
-                "content": chunk,
-                "meta": {"filename": filename, "page": page_num + 1, "modality": "text"},
-            })
+        page_no = page_num + 1
+        page_from_end = total_pages - page_num
+        full_text = (page.get_text("text") or "").strip()
+        paragraphs = page_paragraphs[page_num]
+        paragraph_count_page = len(paragraphs)
+        page_word_count = word_count(full_text)
+        page_word_cursor = 1
+
+        if total_pages == 1 and full_text:
+            words = tokenize_words(full_text)
+            items.append(_make_text_item(
+                full_text, filename, page_no, total_pages,
+                paragraph_index=0, global_paragraph_index=0,
+                paragraph_count_page=paragraph_count_page,
+                paragraph_count_doc=paragraph_count_doc,
+                region="body", chunk_kind="page_full",
+                doc_word_start=1, page_word_start=1, para_word_start=1,
+                page_word_count=page_word_count,
+                para_word_count=len(words),
+            ))
+
+        for para_idx, para in enumerate(paragraphs):
+            para_text = para["text"]
+            region = para.get("region", "body")
+            words = tokenize_words(para_text)
+            para_word_count = len(words)
+            doc_w_start = doc_word_cursor + 1
+            page_w_start = page_word_cursor
+            para_w_start = 1
+
+            if len(words) <= CHUNK_SIZE:
+                items.append(_make_text_item(
+                    para_text, filename, page_no, total_pages,
+                    para_idx, global_para_idx,
+                    paragraph_count_page, paragraph_count_doc,
+                    region, "paragraph",
+                    doc_w_start, page_w_start, para_w_start,
+                    page_word_count=page_word_count,
+                    para_word_count=para_word_count,
+                ))
+            else:
+                step = max(1, CHUNK_SIZE - CHUNK_OVERLAP)
+                i = 0
+                while i < len(words):
+                    sub_words = words[i:i + CHUNK_SIZE]
+                    sub = " ".join(sub_words)
+                    if len(sub.strip()) > MIN_CHUNK_CHARS:
+                        items.append(_make_text_item(
+                            sub, filename, page_no, total_pages,
+                            para_idx, global_para_idx,
+                            paragraph_count_page, paragraph_count_doc,
+                            region, "window",
+                            doc_w_start + i, page_w_start + i, i + 1,
+                            page_word_count=page_word_count,
+                            para_word_count=para_word_count,
+                        ))
+                    i += step
+
+            doc_word_cursor += para_word_count
+            page_word_cursor += para_word_count
+            global_para_idx += 1
+
         for img in page.get_images(full=True):
             xref = img[0]
             try:
@@ -86,12 +237,20 @@ def process_pdf(file_bytes: bytes, filename: str) -> list:
                 "content": pil_img,
                 "meta": {
                     "filename": filename,
-                    "page": page_num + 1,
+                    "page": page_no,
+                    "total_pages": total_pages,
+                    "page_from_end": page_from_end,
                     "modality": "image",
                     "thumbnail_b64": _thumbnail_b64(pil_img),
                 },
             })
     doc.close()
+
+    doc_word_count = doc_word_cursor
+    for item in items:
+        if item["type"] == "text":
+            item["meta"]["doc_word_count"] = doc_word_count
+
     return items
 
 
