@@ -1,10 +1,11 @@
-"""Hot-swapping model manager with per-model quantization.
+"""Resident model manager with per-model quantization (Option A).
 
-Ensures only ONE model (embedder / reranker / generator) is resident in VRAM at
-any given time. Models are loaded on demand and the previously loaded model is
-evicted (del -> gc.collect -> torch.cuda.empty_cache) before a different one is
-loaded. An asyncio.Lock serialises swaps so concurrent requests cannot corrupt
-the VRAM state.
+All three models (embedder / reranker / generator), quantized to NF4 4-bit, are
+kept resident in VRAM at the same time (~5 GB total on a 6 GB card). Each is
+loaded at most once -- eagerly via ``preload_all()`` at startup, or lazily on
+first use -- which removes the per-query load/evict latency of the old hot-swap
+design. An asyncio.Lock serialises GPU work so two heavy operations never spike
+VRAM concurrently. On error a single model is evicted and reloaded on next use.
 
 Quantization is configured PER MODEL via the ``PRECISION`` dict below. Change a
 single entry to switch how that one model is loaded.
@@ -158,19 +159,45 @@ def _load_generator_cls():
 
 
 class ModelManager:
-    """Singleton that keeps at most one model in VRAM."""
+    """Singleton that keeps ALL models resident in VRAM (Option A).
+
+    The three 2B models, quantized to NF4 4-bit, fit together in ~5 GB, so we
+    load each one once and keep it warm for the lifetime of the process. This
+    eliminates the per-query load/evict overhead of the old hot-swap design.
+
+    A single ``asyncio.Lock`` still serialises GPU work so two heavy operations
+    (e.g. an ingest embed pass and a chat generation) never overlap and spike
+    VRAM at the same time. Loads happen at most once per model, under the lock.
+    """
 
     def __init__(self):
-        self._model = None
-        self._name = None
+        self._models: dict = {}
         self._lock = asyncio.Lock()
+        self._loaders = {
+            "embedder": self._load_embedder,
+            "reranker": self._load_reranker,
+            "generator": self._load_generator,
+        }
 
-    def _evict(self):
-        """Unload the current model and free VRAM. Caller must hold the lock."""
-        if self._model is not None:
-            del self._model
-            self._model = None
-            self._name = None
+    def status(self) -> dict:
+        """Report which models are currently resident (for UI warmup display)."""
+        names = ("embedder", "reranker", "generator")
+        loaded = {n: (n in self._models) for n in names}
+        return {
+            "loaded": loaded,
+            "ready": all(loaded.values()),
+            "count": sum(loaded.values()),
+            "total": len(names),
+        }
+
+    def _evict_one(self, name: str):
+        """Drop a single model and free its VRAM. Caller must hold the lock.
+
+        Used only as a recovery path (e.g. after a CUDA OOM) so the next request
+        reloads it from a clean slate; the other resident models stay warm.
+        """
+        if name in self._models:
+            del self._models[name]
             gc.collect()
             try:
                 import torch
@@ -179,16 +206,31 @@ class ModelManager:
             except Exception:
                 pass
 
+    async def preload_all(self):
+        """Load every model once, sequentially, under the lock.
+
+        Kicked off as a background task at startup so the API is reachable
+        immediately while the GPU warms up. Failures are logged, not fatal.
+        """
+        for name in ("embedder", "reranker", "generator"):
+            async with self._lock:
+                if name in self._models:
+                    continue
+                try:
+                    self._models[name] = await asyncio.to_thread(self._loaders[name])
+                except Exception as e:  # pragma: no cover - depends on env
+                    warnings.warn(f"preload: failed to load {name}: {e}")
+
     # --- public async context managers (use with `async with await manager.x()`) ---
 
     async def embedder(self):
-        return _ModelContext(self, "embedder", self._load_embedder)
+        return _ModelContext(self, "embedder")
 
     async def reranker(self):
-        return _ModelContext(self, "reranker", self._load_reranker)
+        return _ModelContext(self, "reranker")
 
     async def generator(self):
-        return _ModelContext(self, "generator", self._load_generator)
+        return _ModelContext(self, "generator")
 
     # --- private loaders ---
 
@@ -266,39 +308,39 @@ class ModelManager:
 
 
 class _ModelContext:
-    """Async context manager: acquire lock, (lazily) load model, yield, release.
+    """Async context manager: acquire the GPU lock, ensure the model is loaded
+    (once), yield it, then release the lock.
 
-    Eviction happens lazily: a model is only unloaded when a *different* model is
-    requested. This keeps the model warm for back-to-back calls of the same kind.
+    Models are kept resident, so the load only happens the first time (or after a
+    recovery eviction). The lock is held for the duration of the operation so GPU
+    work is serialised across requests.
     """
 
-    def __init__(self, manager: "ModelManager", name: str, loader):
+    def __init__(self, manager: "ModelManager", name: str):
         self._manager = manager
         self._name = name
-        self._loader = loader
 
     async def __aenter__(self):
         await self._manager._lock.acquire()
         try:
-            if self._manager._name != self._name:
-                self._manager._evict()
+            if self._name not in self._manager._models:
                 # Run the (slow, blocking) load in a worker thread so the asyncio
                 # event loop stays responsive (e.g. /health keeps answering and
                 # client connections don't drop while a model loads).
-                self._manager._model = await asyncio.to_thread(self._loader)
-                self._manager._name = self._name
+                loader = self._manager._loaders[self._name]
+                self._manager._models[self._name] = await asyncio.to_thread(loader)
         except Exception:
             self._manager._lock.release()
             raise
-        return self._manager._model
+        return self._manager._models[self._name]
 
     async def __aexit__(self, exc_type, exc, tb):
-        # On error (e.g. CUDA OOM) the resident model may be in a bad state and
-        # VRAM is likely fragmented/leaked. Evict it so the NEXT request starts
-        # from a clean slate instead of cascading OOMs.
+        # On error (e.g. CUDA OOM) this model may be in a bad state / VRAM may be
+        # fragmented. Evict just this one so the NEXT request reloads it cleanly,
+        # while the other resident models stay warm.
         try:
             if exc_type is not None:
-                self._manager._evict()
+                self._manager._evict_one(self._name)
         finally:
             self._manager._lock.release()
         return False

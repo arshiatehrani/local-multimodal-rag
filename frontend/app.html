@@ -307,17 +307,28 @@ function isSupported(name) {
 }
 
 /* ---------- Health ---------- */
+let modelsReady = false;
 async function checkHealth() {
   const pill = document.getElementById("statusPill");
   const txt = document.getElementById("statusText");
   try {
     const r = await fetch(API + "/health");
-    if (r.ok) { pill.classList.add("online"); txt.textContent = "backend online"; return; }
-    throw new Error();
-  } catch { pill.classList.remove("online"); txt.textContent = "backend offline"; }
+    if (!r.ok) throw new Error();
+    pill.classList.add("online");
+    if (!modelsReady) {
+      try {
+        const s = await (await fetch(API + "/models/status")).json();
+        modelsReady = s.ready;
+        txt.textContent = s.ready ? "models ready" : `loading models ${s.count}/${s.total}...`;
+      } catch { txt.textContent = "backend online"; }
+    } else {
+      txt.textContent = "models ready";
+    }
+  } catch { pill.classList.remove("online"); modelsReady = false; txt.textContent = "backend offline"; }
 }
 checkHealth();
-setInterval(checkHealth, 8000);
+// Poll quickly while models warm up, then back off once they're ready.
+setInterval(checkHealth, 3000);
 
 /* ---------- Spaces ---------- */
 const spaceList = document.getElementById("spaceList");

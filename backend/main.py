@@ -5,6 +5,7 @@ saved chats. Search and chat are always scoped to a single space.
 """
 
 import json
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
@@ -17,12 +18,20 @@ import prompts
 from qdrant_store import ensure_collection, delete_by_file, delete_by_space
 from ingest import ingest_file, is_supported
 from query import run_query
+from model_manager import manager
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     ensure_collection()
+    # Start loading all models onto the GPU in the background. This returns
+    # immediately so /health responds right away (the launcher opens the browser
+    # as soon as it does), while the models warm up concurrently with the page.
+    app.state.warmup_task = asyncio.create_task(manager.preload_all())
     yield
+    task = getattr(app.state, "warmup_task", None)
+    if task and not task.done():
+        task.cancel()
 
 
 app = FastAPI(title="Multimodal RAG API", lifespan=lifespan)
@@ -42,6 +51,11 @@ def _sse(payload: dict) -> str:
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/models/status")
+def models_status():
+    return manager.status()
 
 
 # --------------------------------------------------------------------------- #

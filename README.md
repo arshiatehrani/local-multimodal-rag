@@ -10,7 +10,8 @@ Everything is organized into **Spaces** (projects): each space has its own files
 its own isolated vector search, its own saved chats, and its own editable system
 prompt. There is also a reusable **prompt library** shared across spaces.
 
-All three models are **hot-swapped** so only one is ever resident in VRAM:
+All three models are kept **resident in VRAM at once** (NF4 4-bit, ~5 GB total on
+a 6 GB card) and are warmed up at startup, so there is no per-query load latency:
 
 | Role       | Model                  | HF ID                        | Default precision |
 |------------|------------------------|------------------------------|-------------------|
@@ -68,7 +69,7 @@ Notes:
 RAG/
 ├── backend/
 │   ├── main.py            # FastAPI app: spaces, files, chats, prompts, /chat SSE
-│   ├── model_manager.py   # Hot-swap singleton + asyncio.Lock; per-model precision
+│   ├── model_manager.py   # Resident model singleton + asyncio.Lock; per-model precision
 │   ├── ingest.py          # Preprocess + chunk + embed + upsert (tagged space/file)
 │   ├── query.py           # Embed query -> space-filtered search -> rerank -> generate
 │   ├── qdrant_store.py    # Qdrant connection, payload indexes, filters, deletes
@@ -243,6 +244,7 @@ Supported file types: `.pdf`, `.png`, `.jpg`, `.jpeg`, `.webp`, `.bmp`, `.tiff`,
 | Method   | Path                                   | Purpose                                  |
 |----------|----------------------------------------|------------------------------------------|
 | `GET`    | `/health`                              | Liveness check                           |
+| `GET`    | `/models/status`                       | Model warmup progress (`{ready, count, total, loaded}`) |
 | `GET`    | `/spaces`                              | List spaces                              |
 | `POST`   | `/spaces`                              | Create a space                           |
 | `GET`    | `/spaces/{id}`                         | Get a space (incl. files + system prompt)|
@@ -264,25 +266,31 @@ Supported file types: `.pdf`, `.png`, `.jpg`, `.jpeg`, `.webp`, `.bmp`, `.tiff`,
 
 ## Expected VRAM usage
 
-Because of hot-swapping, only one model is resident at a time, so peak VRAM is
-bounded by the largest single model (the generator). With the default **NF4
-4-bit** quantization each 2B model's weights are roughly a quarter of their bf16
-size; the figures below include CUDA context and activation overhead and are
-approximate.
+All three models stay resident, so VRAM is the **sum** of the three (the CUDA
+context is counted once, not per model). With the default **NF4 4-bit**
+quantization each 2B model's weights are roughly a quarter of their bf16 size.
+Figures are approximate.
 
-| State        | Active model | VRAM (NF4 / 4-bit)   | VRAM (bf16)      |
-|--------------|--------------|----------------------|------------------|
-| Idle         | None         | ~0.5 GB (CUDA context) | ~0.5 GB        |
-| Ingesting    | Embedder     | ~1.3 GB              | ~2.5 GB          |
-| Query step 1 | Embedder     | ~1.3 GB              | ~2.5 GB          |
-| Query step 2 | Reranker     | ~1.3 GB              | ~2.5 GB          |
-| Query step 3 | Generator    | ~1.8 GB              | ~3.2 GB          |
-| **Peak**     | Any one model| **~2 GB max**        | **~3.5 GB max**  |
+| Component                                   | VRAM (NF4 / 4-bit) |
+|---------------------------------------------|--------------------|
+| CUDA context + kernels (once)               | ~0.7 GB            |
+| Embedder weights                            | ~1.3 GB            |
+| Reranker weights                            | ~1.3 GB            |
+| Generator weights                           | ~1.4 GB            |
+| **Steady state (all resident, idle)**       | **~4.7 GB**        |
+| + generation activations / KV cache         | +0.3–0.7 GB        |
+| **Peak during generation**                  | **~5.0–5.4 GB**    |
 
-> Ingesting PDFs that contain images is the most memory-intensive step. To keep
-> spikes low on 6 GB cards, ingest uses a small embed batch size (4) and downscales
-> large images to a max dimension of 1024 px before embedding
-> ([`backend/ingest.py`](backend/ingest.py)).
+This fits a 6 GB GPU with ~0.6–1.0 GB of headroom. The tightest moment is
+ingesting PDFs that contain images (activation spikes stack on top of the
+resident floor); to keep that safe, ingest uses a small embed batch size (4) and
+downscales large images to a max dimension of 1024 px before embedding
+([`backend/ingest.py`](backend/ingest.py)).
+
+> If you run other GPU apps alongside this and need the VRAM back, switch one or
+> more models to a smaller footprint, or change the manager back to evicting
+> idle models (see `ModelManager` in
+> [`backend/model_manager.py`](backend/model_manager.py)).
 
 ## Notes & tuning
 
@@ -299,7 +307,11 @@ approximate.
 - **Empty-space fast path**: if a space has no vectors yet, chat answers instantly
   without loading any model.
 - **Embedding dim**: 2048 (must match the Qdrant collection in `qdrant_store.py`).
-- **Swap latency**: embedder/reranker load in ~1–2 s, generator ~3–5 s from an
-  NVMe SSD — normal for hot-swapping on a single GPU.
+- **Model warmup**: all models load once at startup in a background task, so the
+  API is reachable immediately and the GPU warms up while the page opens. Progress
+  is exposed at `GET /models/status` and shown in the sidebar status pill
+  ("loading models N/3" -> "models ready"). After warmup there is **no per-query
+  load latency**. A single lock still serialises GPU work so ingest and chat never
+  spike VRAM at the same time.
 - **Reset everything**: `stop.bat`, then delete `./qdrant_data` (vectors) and
   `./spaces` (files + chats). Delete `./prompts` to clear the prompt library.
