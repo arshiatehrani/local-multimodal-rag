@@ -15,11 +15,9 @@ from positioning import (
     boost_hits_by_position,
     word_count_answer,
     tokenize_words,
-    build_char_count_sources,
-    build_total_char_count_response,
-    build_word_count_response,
 )
-from qdrant_store import hybrid_search, count_points, get_text_chunks_for_count
+from stat_query import try_metadata_stat_response, resolve_stat_metric
+from qdrant_store import hybrid_search, count_points
 from rag_context import (
     MAX_CONTEXT_TOKENS,
     estimate_tokens,
@@ -410,7 +408,7 @@ def _should_skip_rerank(n_points: int, query: str, pos_hints: dict) -> bool:
         return False
     if n_points > SKIP_RERANK_MAX_POINTS:
         return False
-    if pos_hints.get("wants_word_count"):
+    if resolve_stat_metric(pos_hints):
         return True
     if pos_hints.get("wants_char_count"):
         return True
@@ -666,38 +664,18 @@ async def run_query(user_query: str, space_id: str, chat_id: str):
     pos_hints = parse_position(user_query)
     n_points = count_points(space_id)
 
-    if pos_hints.get("wants_char_count"):
-        if pos_hints.get("wants_total_char_count"):
-            yield _status("search", "Searching content…")
-            answer, char_sources = build_total_char_count_response(space_id, pos_hints)
-        elif pos_hints.get("char_target"):
-            yield _status("search", "Searching content…")
-            chunks = get_text_chunks_for_count(space_id, pos_hints)
-            answer, char_sources = build_char_count_sources(chunks, pos_hints)
-        else:
-            answer, char_sources = "Could not determine which character to count.", []
+    meta_result = try_metadata_stat_response(space_id, pos_hints)
+    if meta_result is not None:
+        yield _status("search", "Searching content…")
+        answer, meta_sources = meta_result
         yield {"type": "context", **context_status(estimate_tokens(user_query))}
         yield _status("prepare", "Preparing response…")
         yield _status("generate", "Generating response…")
         async for part in _yield_text_stream(answer):
             yield {"type": "token", "text": part}
-        yield {"type": "sources", "sources": char_sources}
+        yield {"type": "sources", "sources": meta_sources}
         yield {"type": "done"}
         return
-
-    if pos_hints.get("wants_word_count"):
-        yield _status("search", "Searching content…")
-        word_result = build_word_count_response(space_id, pos_hints)
-        if word_result is not None:
-            answer, word_sources = word_result
-            yield {"type": "context", **context_status(estimate_tokens(user_query))}
-            yield _status("prepare", "Preparing response…")
-            yield _status("generate", "Generating response…")
-            async for part in _yield_text_stream(answer):
-                yield {"type": "token", "text": part}
-            yield {"type": "sources", "sources": word_sources}
-            yield {"type": "done"}
-            return
 
     overview = _is_overview_query(user_query)
     top_k_retrieve, top_k_final = _top_k_for_space(n_points, overview)

@@ -157,19 +157,19 @@
   .load-status.err .load-bars { display: none; }
 
   .conn-badge {
-    position: fixed; top: 12px; right: 14px; z-index: 200;
     display: flex; align-items: center; gap: 7px;
-    padding: 6px 12px; border-radius: 999px;
-    font-size: 11px; font-weight: 500; line-height: 1;
-    background: var(--surface); border: 1px solid var(--border);
-    box-shadow: var(--bubble-shadow); color: var(--text);
-    pointer-events: none; user-select: none;
+    margin-top: 8px; padding-top: 8px;
+    border-top: 1px solid var(--border);
+    font-size: 11px; font-weight: 500; line-height: 1.35;
+    color: var(--text-dim);
   }
   .conn-badge .conn-dot {
     width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
     background: var(--text-dim);
   }
+  .conn-badge.online { color: var(--text); }
   .conn-badge.online .conn-dot { background: var(--accent); }
+  .conn-badge.offline { color: var(--danger); }
   .conn-badge.offline .conn-dot { background: var(--danger); }
   .conn-badge.checking .conn-dot {
     background: var(--text-dim);
@@ -377,7 +377,7 @@
     color: var(--text); white-space: pre-wrap; word-wrap: break-word; overflow-wrap: anywhere;
     line-height: 1.55; min-width: 0; max-width: 100%;
   }
-  .answer-stream .answer-text { white-space: pre-wrap; overflow-wrap: anywhere; display: block; }
+  .answer-stream .answer-text { overflow-wrap: anywhere; display: block; }
   .answer-stream-indicator {
     height: 20px; display: none; align-items: center; margin-top: 6px; flex-shrink: 0;
   }
@@ -489,10 +489,6 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 </head>
 <body>
-  <div class="conn-badge checking" id="connBadge" aria-live="polite">
-    <span class="conn-dot" aria-hidden="true"></span>
-    <span id="connText">Checking backend…</span>
-  </div>
   <!-- SPACES SIDEBAR -->
   <div class="spaces-rail-wrap" id="spacesRailWrap">
     <aside class="sidebar" id="spacesSidebar">
@@ -526,6 +522,10 @@
                 <div class="load-bar-fill sub" id="loadBarCurrent"></div>
               </div>
             </div>
+          </div>
+          <div class="conn-badge checking" id="connBadge" aria-live="polite">
+            <span class="conn-dot" aria-hidden="true"></span>
+            <span id="connText">Checking backend…</span>
           </div>
         </div>
       </div>
@@ -790,6 +790,20 @@ setupRailResizer(document.getElementById("chatsResizer"), "--chats-rail-w", "cha
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 }
+function closeUnclosedMarkdown(text) {
+  let s = String(text ?? "");
+  const boldCount = (s.match(/\*\*/g) || []).length;
+  if (boldCount % 2 === 1) {
+    const i = s.lastIndexOf("**");
+    const tail = s.slice(i + 2);
+    if (!tail) s = s.slice(0, i);
+    else if (!tail.includes("**")) s = s.slice(0, i) + "**" + tail + "**";
+    else s += "**";
+  }
+  const noBold = s.replace(/\*\*/g, "");
+  if ((noBold.match(/\*/g) || []).length % 2 === 1) s += "*";
+  return s;
+}
 function renderMarkdown(text) {
   if (!text) return "";
   let s = escapeHtml(text);
@@ -799,6 +813,9 @@ function renderMarkdown(text) {
   s = s.replace(/(<li>[\s\S]*?<\/li>)+/g, m => `<ul>${m}</ul>`);
   s = s.replace(/\n/g, "<br>");
   return s;
+}
+function renderMarkdownStreaming(text) {
+  return renderMarkdown(closeUnclosedMarkdown(text));
 }
 
 const PIPELINE_STEPS = [
@@ -2233,7 +2250,7 @@ async function sendMessage() {
             bubble.classList.add("answer-visible");
           }
           answer += data.text;
-          answerText.textContent = answer;
+          answerText.innerHTML = renderMarkdownStreaming(answer);
           scrollChatToBottom();
         } else if (data.type === "status") {
           updatePipelineStep(loaderWrap, data.step, data.text, pipelineMode, stepsEl, progressFill);
