@@ -17,6 +17,7 @@ from positioning import (
     tokenize_words,
     build_char_count_sources,
     build_total_char_count_response,
+    build_word_count_response,
 )
 from qdrant_store import hybrid_search, count_points, get_text_chunks_for_count
 from rag_context import (
@@ -683,6 +684,20 @@ async def run_query(user_query: str, space_id: str, chat_id: str):
         yield {"type": "sources", "sources": char_sources}
         yield {"type": "done"}
         return
+
+    if pos_hints.get("wants_word_count"):
+        yield _status("search", "Searching content…")
+        word_result = build_word_count_response(space_id, pos_hints)
+        if word_result is not None:
+            answer, word_sources = word_result
+            yield {"type": "context", **context_status(estimate_tokens(user_query))}
+            yield _status("prepare", "Preparing response…")
+            yield _status("generate", "Generating response…")
+            async for part in _yield_text_stream(answer):
+                yield {"type": "token", "text": part}
+            yield {"type": "sources", "sources": word_sources}
+            yield {"type": "done"}
+            return
 
     overview = _is_overview_query(user_query)
     top_k_retrieve, top_k_final = _top_k_for_space(n_points, overview)

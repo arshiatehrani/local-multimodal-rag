@@ -638,6 +638,124 @@ def build_total_char_count_response(space_id: str, hints: dict) -> tuple[str, li
     return answer, sources
 
 
+def build_word_count_response(space_id: str, hints: dict) -> tuple[str, list[dict]] | None:
+    """Deterministic word count from ingest statistics — bypasses the LLM."""
+    from document_stats import format_stats_context_block
+    import spaces as _spaces
+
+    scope = hints.get("count_scope", "document")
+
+    def _file_source(f: dict, stats: dict) -> dict:
+        name = f.get("original_name", "file")
+        wc = int(stats.get("word_count", 0))
+        return {
+            "file_id": f.get("file_id", ""),
+            "filename": name,
+            "page": 1,
+            "modality": "text",
+            "chunk_kind": "document_stats",
+            "text": format_stats_context_block(name, stats),
+            "highlight_mode": "",
+            "highlight_phrases": [f"{wc} words"],
+        }
+
+    def _chunk_source(pay: dict, label: str) -> dict:
+        return {
+            "file_id": pay.get("file_id", ""),
+            "filename": pay.get("filename", ""),
+            "page": pay.get("page", 1),
+            "modality": pay.get("modality", "text"),
+            "chunk_kind": pay.get("chunk_kind", ""),
+            "text": (pay.get("text") or "")[:240],
+            "highlight_mode": "",
+            "highlight_phrases": [label],
+        }
+
+    if scope == "document":
+        try:
+            data = _spaces.get_space(space_id)
+            files = [f for f in data.get("files", []) if f.get("text_stats")]
+        except Exception:
+            files = []
+        if not files:
+            return (
+                "No word-count statistics are available yet. Re-upload PDFs to compute precise counts.",
+                [],
+            )
+        if len(files) == 1:
+            stats = files[0]["text_stats"]
+            wc = int(stats.get("word_count", 0))
+            cc = int(stats.get("char_count", 0))
+            answer = (
+                f"The document contains **{wc}** words "
+                f"({cc} characters — precise counts computed at ingest)."
+            )
+            return answer, [_file_source(files[0], stats)]
+        lines = [f"This space contains **{len(files)}** files with the following word counts:"]
+        sources = []
+        total = 0
+        for f in files:
+            stats = f["text_stats"]
+            wc = int(stats.get("word_count", 0))
+            total += wc
+            name = f.get("original_name", "file")
+            lines.append(f"- **{name}**: **{wc}** words")
+            sources.append(_file_source(f, stats))
+        lines.append(f"\n**Total: {total} words** across all files.")
+        return "\n".join(lines), sources
+
+    if scope == "page":
+        from qdrant_store import scroll_payloads
+
+        page = hints.get("page")
+        if page is None:
+            return None
+        payloads = [
+            p for p in scroll_payloads(space_id, chunk_kind="page_full", modality="text")
+            if p.get("page") == page
+        ]
+        if not payloads:
+            return None
+        pay = payloads[0]
+        pwc = pay.get("page_word_count")
+        if pwc is None:
+            pwc = word_count(pay.get("text", ""))
+        return (
+            f"Page {page} contains **{pwc}** words (precise count at ingest).",
+            [_chunk_source(pay, f"{pwc} words")],
+        )
+
+    if scope == "paragraph":
+        from qdrant_store import scroll_payloads
+
+        payloads = scroll_payloads(space_id, chunk_kind="paragraph", modality="text")
+        if hints.get("global_paragraph_index") is not None:
+            gpi = hints["global_paragraph_index"]
+            payloads = [p for p in payloads if p.get("global_paragraph_index") == gpi]
+        elif hints.get("paragraph_index") is not None:
+            pi = hints["paragraph_index"]
+            page = hints.get("page")
+            payloads = [
+                p for p in payloads
+                if p.get("paragraph_index") == pi
+                and (page is None or p.get("page") == page)
+            ]
+        else:
+            return None
+        if not payloads:
+            return None
+        pay = payloads[0]
+        pwc = pay.get("para_word_count") or word_count(pay.get("text", ""))
+        gpi = int(pay.get("global_paragraph_index", 0)) + 1
+        return (
+            f"Paragraph {gpi} (page {pay.get('page', '?')}) contains **{pwc}** words "
+            f"(precise count at ingest).",
+            [_chunk_source(pay, f"{pwc} words")],
+        )
+
+    return None
+
+
 def format_position_header(meta: dict) -> str:
     """Human-readable source header with full positional detail."""
     parts = [meta.get("filename", ""), f"p.{meta.get('page', '')}/{meta.get('total_pages', '?')}"]
