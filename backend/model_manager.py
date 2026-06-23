@@ -13,8 +13,10 @@ single entry to switch how that one model is loaded.
 
 import os
 import gc
+import time
 import asyncio
 import warnings
+import traceback
 
 # Reduce CUDA fragmentation OOMs on small GPUs. Must be set before the CUDA
 # caching allocator initialises (i.e. before the first GPU allocation).
@@ -172,6 +174,7 @@ class ModelManager:
 
     def __init__(self):
         self._models: dict = {}
+        self._errors: dict = {}
         self._lock = asyncio.Lock()
         self._loaders = {
             "embedder": self._load_embedder,
@@ -188,6 +191,7 @@ class ModelManager:
             "ready": all(loaded.values()),
             "count": sum(loaded.values()),
             "total": len(names),
+            "errors": dict(self._errors),
         }
 
     def _evict_one(self, name: str):
@@ -212,14 +216,22 @@ class ModelManager:
         Kicked off as a background task at startup so the API is reachable
         immediately while the GPU warms up. Failures are logged, not fatal.
         """
+        print("[models] warmup started", flush=True)
         for name in ("embedder", "reranker", "generator"):
             async with self._lock:
                 if name in self._models:
                     continue
+                print(f"[models] loading {name} ...", flush=True)
+                t0 = time.time()
                 try:
                     self._models[name] = await asyncio.to_thread(self._loaders[name])
+                    self._errors.pop(name, None)
+                    print(f"[models] loaded {name} in {time.time() - t0:.1f}s", flush=True)
                 except Exception as e:  # pragma: no cover - depends on env
-                    warnings.warn(f"preload: failed to load {name}: {e}")
+                    self._errors[name] = repr(e)
+                    print(f"[models] FAILED to load {name}: {e!r}", flush=True)
+                    traceback.print_exc()
+        print(f"[models] warmup finished: {self.status()['count']}/3 loaded", flush=True)
 
     # --- public async context managers (use with `async with await manager.x()`) ---
 

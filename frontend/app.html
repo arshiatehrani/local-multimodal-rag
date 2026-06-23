@@ -319,7 +319,10 @@ async function checkHealth() {
       try {
         const s = await (await fetch(API + "/models/status")).json();
         modelsReady = s.ready;
-        txt.textContent = s.ready ? "models ready" : `loading models ${s.count}/${s.total}...`;
+        const nErr = s.errors ? Object.keys(s.errors).length : 0;
+        if (s.ready) txt.textContent = "models ready";
+        else if (nErr) txt.textContent = `model load error (${nErr}) - see terminal`;
+        else txt.textContent = `loading models ${s.count}/${s.total}...`;
       } catch { txt.textContent = "backend online"; }
     } else {
       txt.textContent = "models ready";
