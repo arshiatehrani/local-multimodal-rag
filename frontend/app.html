@@ -197,6 +197,42 @@
   .msg.user .bubble { background: var(--user-bubble); color: var(--user-text); border-bottom-right-radius: 4px; font-weight: 500; }
   .msg.assistant .bubble { background: var(--surface); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
   .msg.assistant .bubble.status-hint { color: var(--text-dim); font-style: italic; }
+  .msg.assistant .bubble.streaming { max-width: 80%; }
+  .pipeline-steps {
+    display: flex; flex-direction: column; gap: 7px;
+    font-size: 13px; color: var(--text-dim); transition: opacity .25s ease, max-height .3s ease, margin .3s ease;
+  }
+  .pipeline-step {
+    display: flex; align-items: center; gap: 9px; min-height: 20px;
+    transition: color .15s ease, opacity .15s ease;
+  }
+  .pipeline-step.pending { opacity: .45; }
+  .pipeline-step.active { color: var(--text); font-weight: 500; opacity: 1; }
+  .pipeline-step.done { opacity: .75; }
+  .pipeline-step.skipped { display: none; }
+  .step-marker {
+    flex-shrink: 0; width: 14px; height: 14px; border-radius: 50%;
+    border: 2px solid var(--border); box-sizing: border-box;
+  }
+  .pipeline-step.active .step-marker {
+    border-top-color: var(--accent); animation: spin .7s linear infinite;
+  }
+  .pipeline-step.done .step-marker {
+    border-color: var(--accent); background: var(--accent); position: relative;
+  }
+  .pipeline-step.done .step-marker::after {
+    content: ""; position: absolute; left: 3px; top: 0px; width: 4px; height: 7px;
+    border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg);
+  }
+  .answer-stream {
+    color: var(--text); white-space: pre-wrap; word-wrap: break-word;
+    line-height: 1.55; min-height: 0;
+  }
+  .bubble.streaming:not(.answer-visible) .answer-stream { display: none; }
+  .bubble.streaming.answer-visible .pipeline-steps {
+    opacity: 0; max-height: 0; overflow: hidden; margin: 0; pointer-events: none;
+  }
+  .bubble.streaming.answer-visible .answer-stream { margin-top: 2px; }
   .msg.assistant .bubble strong { font-weight: 700; }
   .msg.assistant .bubble ul { margin: 8px 0 8px 20px; }
   .msg.assistant .bubble li { margin: 4px 0; }
@@ -215,6 +251,10 @@
   .source-card .meta { padding: 8px; font-size: 11px; }
   .source-card .meta .fn { font-weight: 500; word-break: break-all; }
   .source-card .meta .pg { color: var(--text-dim); margin-top: 2px; }
+  .source-card .meta .hl-preview {
+    margin-top: 6px; font-size: 10px; color: var(--accent); line-height: 1.35;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
   .badge { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 4px; background: var(--accent-dim); color: #fff; margin-top: 4px; }
   .theme-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
   .theme-toggle {
@@ -585,6 +625,87 @@ function renderMarkdown(text) {
   s = s.replace(/(<li>[\s\S]*?<\/li>)+/g, m => `<ul>${m}</ul>`);
   s = s.replace(/\n/g, "<br>");
   return s;
+}
+
+const PIPELINE_STEPS = [
+  { step: "embed", label: "Embedding query" },
+  { step: "search", label: "Searching documents" },
+  { step: "rank", label: "Ranking passages" },
+  { step: "prepare", label: "Preparing response" },
+  { step: "generate", label: "Generating response" },
+];
+
+function createStreamingBubble() {
+  const empty = document.getElementById("emptyState");
+  if (empty) empty.remove();
+  const wrap = document.createElement("div");
+  wrap.className = "msg assistant";
+  const bubble = document.createElement("div");
+  bubble.className = "bubble streaming";
+
+  const stepsEl = document.createElement("div");
+  stepsEl.className = "pipeline-steps";
+  for (const s of PIPELINE_STEPS) {
+    const row = document.createElement("div");
+    row.className = "pipeline-step pending";
+    row.dataset.step = s.step;
+    row.innerHTML = `<span class="step-marker"></span><span class="step-label">${s.label}</span>`;
+    stepsEl.appendChild(row);
+  }
+
+  const answerEl = document.createElement("div");
+  answerEl.className = "answer-stream";
+
+  const cursor = document.createElement("span");
+  cursor.className = "cursor";
+
+  bubble.appendChild(stepsEl);
+  bubble.appendChild(answerEl);
+  bubble.appendChild(cursor);
+  wrap.appendChild(bubble);
+  chatScroll.appendChild(wrap);
+  chatScroll.scrollTop = chatScroll.scrollHeight;
+  return { bubble, stepsEl, answerEl, cursor };
+}
+
+function updatePipelineStep(stepsEl, step, text, modeRef) {
+  if (!stepsEl || !step) return;
+  const order = PIPELINE_STEPS.map(s => s.step);
+  const idx = order.indexOf(step);
+  if (idx < 0) return;
+
+  if (modeRef && modeRef.value === null) {
+    modeRef.value = step === "embed" ? "full" : "direct";
+    if (modeRef.value === "direct") {
+      ["embed", "search", "rank"].forEach(id => {
+        const row = stepsEl.querySelector(`[data-step="${id}"]`);
+        if (row) row.classList.add("skipped");
+      });
+    }
+  }
+
+  stepsEl.querySelectorAll(".pipeline-step").forEach(row => {
+    const id = row.dataset.step;
+    if (row.classList.contains("skipped")) return;
+    const i = order.indexOf(id);
+    row.classList.remove("pending", "active", "done");
+    if (i < idx) row.classList.add("done");
+    else if (id === step) row.classList.add("active");
+    else row.classList.add("pending");
+  });
+
+  if (text) {
+    const label = stepsEl.querySelector(`[data-step="${step}"] .step-label`);
+    if (label) label.textContent = text.replace(/\u2026$|\.{3}$/, "");
+  }
+}
+
+function finishPipelineSteps(stepsEl) {
+  if (!stepsEl) return;
+  stepsEl.querySelectorAll(".pipeline-step:not(.skipped)").forEach(row => {
+    row.classList.remove("pending", "active");
+    row.classList.add("done");
+  });
 }
 function updateContextRing(data) {
   const ring = document.getElementById("contextRing");
@@ -1188,7 +1309,7 @@ function addBubble(role, text, asMarkdown) {
 }
 
 /* ---------- PDF source viewer ---------- */
-let pdfDoc = null, pdfPageNum = 1, pdfHighlightText = "";
+let pdfDoc = null, pdfPageNum = 1, pdfHighlightPhrases = [];
 let pdfSources = [], pdfSourceIdx = 0, pdfFileId = null;
 
 function normalizeForMatch(s) {
@@ -1198,6 +1319,14 @@ function normalizeForMatch(s) {
     .replace(/[^\w\s\u0600-\u06FF]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function pickHighlightPhrases(source) {
+  if (source.highlight_phrases && source.highlight_phrases.length) {
+    return source.highlight_phrases.filter(Boolean);
+  }
+  const fallback = pickHighlightText(source);
+  return fallback ? [fallback] : [];
 }
 
 function pickHighlightText(source) {
@@ -1217,11 +1346,16 @@ function pickHighlightText(source) {
   return text;
 }
 
-function findMatchRange(pageNorm, chunkNorm) {
+function findMatchRange(pageNorm, chunkNorm, minLen) {
   if (!pageNorm || !chunkNorm) return null;
-  const minLen = 16;
+  const floor = minLen || 16;
+  if (chunkNorm.length <= floor) {
+    const pos = pageNorm.indexOf(chunkNorm);
+    if (pos >= 0) return { start: pos, end: pos + chunkNorm.length };
+  }
+  const minTry = Math.min(floor, chunkNorm.length);
   const maxTry = Math.min(200, chunkNorm.length);
-  for (let len = maxTry; len >= minLen; len -= 4) {
+  for (let len = maxTry; len >= minTry; len -= (len > 20 ? 4 : 1)) {
     for (const off of [0, Math.floor(chunkNorm.length / 4), Math.floor(chunkNorm.length / 2)]) {
       if (off + len > chunkNorm.length) continue;
       const sub = chunkNorm.slice(off, off + len);
@@ -1229,10 +1363,11 @@ function findMatchRange(pageNorm, chunkNorm) {
       if (pos >= 0) return { start: pos, end: pos + len };
     }
   }
-  const words = chunkNorm.split(" ").filter(w => w.length > 3);
-  for (let n = Math.min(10, words.length); n >= 3; n--) {
+  const words = chunkNorm.split(" ").filter(w => w.length > 1);
+  for (let n = Math.min(10, words.length); n >= 1; n--) {
     for (let i = 0; i <= words.length - n; i++) {
       const sub = words.slice(i, i + n).join(" ");
+      if (sub.length < minTry) continue;
       const pos = pageNorm.indexOf(sub);
       if (pos >= 0) return { start: pos, end: pos + sub.length };
     }
@@ -1240,10 +1375,10 @@ function findMatchRange(pageNorm, chunkNorm) {
   return null;
 }
 
-async function applyPdfHighlights(page, viewport, hlLayer, chunkText) {
+async function applyPdfHighlights(page, viewport, hlLayer, phraseList) {
   hlLayer.innerHTML = "";
-  const chunkNorm = normalizeForMatch(chunkText);
-  if (!chunkNorm) return;
+  const phrases = (Array.isArray(phraseList) ? phraseList : [phraseList]).filter(Boolean);
+  if (!phrases.length) return;
 
   const textContent = await page.getTextContent();
   const scale = viewport.scale;
@@ -1262,18 +1397,27 @@ async function applyPdfHighlights(page, viewport, hlLayer, chunkText) {
     spans.push({ start, end: pageNorm.length, tx, h, w: item.width * scale });
   }
 
-  const range = findMatchRange(pageNorm, chunkNorm);
-  if (!range) return;
+  const ranges = [];
+  for (const phrase of phrases) {
+    const chunkNorm = normalizeForMatch(phrase);
+    if (!chunkNorm) continue;
+    const minLen = chunkNorm.length <= 24 ? Math.max(2, chunkNorm.length) : 12;
+    const range = findMatchRange(pageNorm, chunkNorm, minLen);
+    if (range) ranges.push(range);
+  }
+  if (!ranges.length) return;
 
   for (const sp of spans) {
-    if (sp.end <= range.start || sp.start >= range.end) continue;
-    const div = document.createElement("div");
-    div.className = "hl";
-    div.style.left = `${sp.tx[4]}px`;
-    div.style.top = `${sp.tx[5] - sp.h}px`;
-    div.style.width = `${Math.max(sp.w, 4)}px`;
-    div.style.height = `${sp.h + 2}px`;
-    hlLayer.appendChild(div);
+    for (const range of ranges) {
+      if (sp.end <= range.start || sp.start >= range.end) continue;
+      const div = document.createElement("div");
+      div.className = "hl";
+      div.style.left = `${sp.tx[4]}px`;
+      div.style.top = `${sp.tx[5] - sp.h}px`;
+      div.style.width = `${Math.max(sp.w, 4)}px`;
+      div.style.height = `${sp.h + 2}px`;
+      hlLayer.appendChild(div);
+    }
   }
 }
 
@@ -1304,7 +1448,7 @@ async function loadPdfSourceAt(idx) {
   const source = pdfSources[idx];
   if (!source) return;
   pdfSourceIdx = idx;
-  pdfHighlightText = pickHighlightText(source);
+  pdfHighlightPhrases = pickHighlightPhrases(source);
   pdfPageNum = parseInt(source.page, 10) || 1;
   document.getElementById("pdfTitle").textContent = source.filename || "Document";
 
@@ -1341,7 +1485,7 @@ async function renderPdfPage() {
   await page.render({ canvasContext: ctx, viewport }).promise;
 
   const hlLayer = document.getElementById("pdfHlLayer");
-  await applyPdfHighlights(page, viewport, hlLayer, pdfHighlightText);
+  await applyPdfHighlights(page, viewport, hlLayer, pdfHighlightPhrases);
   updatePdfToolbar();
 }
 
@@ -1368,15 +1512,37 @@ document.getElementById("pdfNext").addEventListener("click", async () => {
   }
 });
 
-function renderSources(sources) {
-  if (!sources || !sources.length) return;
+function sourceCardKey(s) {
+  return [s.file_id, s.page, s.paragraph_index, s.word_start, s.chunk_kind || s.modality].join("|");
+}
+
+function sourceCardLabel(s) {
+  const parts = [];
+  if (s.page) parts.push("p." + s.page);
+  if (s.paragraph_index != null) parts.push("para " + (Number(s.paragraph_index) + 1));
+  if (s.word_start != null && s.word_end != null) parts.push("w " + s.word_start + "–" + s.word_end);
+  if (s.chunk_kind === "page_full") parts.push("full page");
+  else if (s.region) parts.push(s.region);
+  return parts.join(" · ") || s.modality || "source";
+}
+
+function buildSourcesPanel(sources) {
+  if (!sources || !sources.length) return null;
+  const seen = new Set();
+  const unique = [];
+  for (const s of sources) {
+    const key = sourceCardKey(s);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(s);
+  }
   const wrap = document.createElement("div");
   wrap.className = "sources";
   wrap.innerHTML = `<details class="sources-panel" open>
-    <summary>&#9656; Sources (${sources.length}) — click to open</summary>
+    <summary>&#9656; Sources (${unique.length}) — passages used in the answer</summary>
     <div class="source-grid"></div></details>`;
   const grid = wrap.querySelector(".source-grid");
-  sources.forEach((s, i) => {
+  unique.forEach((s, i) => {
     const card = document.createElement("div");
     card.className = "source-card";
     card.title = "Open in viewer";
@@ -1388,15 +1554,25 @@ function renderSources(sources) {
     }
     const meta = document.createElement("div");
     meta.className = "meta";
+    const hl = (s.highlight_phrases || []).slice(0, 2).map(p => escapeHtml(p)).join(" · ");
     meta.innerHTML = `<div class="fn">${escapeHtml(s.filename)}</div>
-      <div class="pg">page ${escapeHtml(s.page)}</div>
-      <span class="badge">${escapeHtml(s.modality)}</span>`;
+      <div class="pg">${escapeHtml(sourceCardLabel(s))}</div>
+      ${hl ? `<div class="hl-preview">"${hl}"</div>` : ""}
+      <span class="badge">${escapeHtml(s.modality || "text")}</span>`;
     card.appendChild(meta);
-    card.addEventListener("click", () => openPdfSource(s, sources, i));
+    card.addEventListener("click", () => openPdfSource(s, unique, i));
     grid.appendChild(card);
   });
-  chatScroll.appendChild(wrap);
+  return wrap;
+}
+
+function renderSources(sources, replaceEl) {
+  const panel = buildSourcesPanel(sources);
+  if (!panel) return null;
+  if (replaceEl && replaceEl.parentNode) replaceEl.replaceWith(panel);
+  else chatScroll.appendChild(panel);
   chatScroll.scrollTop = chatScroll.scrollHeight;
+  return panel;
 }
 
 chatInput.addEventListener("input", () => {
@@ -1442,14 +1618,13 @@ async function sendMessage() {
   sendBtn.disabled = true;
   chatInput.disabled = true;
 
-  const bubble = addBubble("assistant", "Starting…", false);
-  bubble.classList.add("status-hint");
-  const cursor = document.createElement("span");
-  cursor.className = "cursor";
-  bubble.appendChild(cursor);
+  const { bubble, stepsEl, answerEl, cursor } = createStreamingBubble();
 
   let answer = "";
   let pendingSources = null;
+  let answerStarted = false;
+  let sourcesPanelEl = null;
+  const pipelineMode = { value: null };
 
   try {
     const resp = await fetch(API + "/chat", {
@@ -1474,34 +1649,42 @@ async function sendMessage() {
         let data;
         try { data = JSON.parse(line.slice(5).trim()); } catch { continue; }
         if (data.type === "token") {
+          if (!answerStarted) {
+            answerStarted = true;
+            if (pipelineMode.value === null) {
+              stepsEl.querySelectorAll(".pipeline-step").forEach(r => r.classList.add("skipped"));
+            } else {
+              finishPipelineSteps(stepsEl);
+            }
+            bubble.classList.add("answer-visible");
+          }
           answer += data.text;
-          bubble.classList.remove("status-hint");
-          bubble.textContent = answer;
-          bubble.appendChild(cursor);
+          answerEl.textContent = answer;
           chatScroll.scrollTop = chatScroll.scrollHeight;
         } else if (data.type === "status") {
-          if (!answer) {
-            bubble.textContent = data.text;
-            bubble.classList.add("status-hint");
-            bubble.appendChild(cursor);
-          }
+          updatePipelineStep(stepsEl, data.step, data.text, pipelineMode);
+          chatScroll.scrollTop = chatScroll.scrollHeight;
         } else if (data.type === "context") {
           updateContextRing(data);
         } else if (data.type === "sources") {
           pendingSources = data.sources;
+          sourcesPanelEl = renderSources(pendingSources, sourcesPanelEl);
         } else if (data.type === "done") {
+          finishPipelineSteps(stepsEl);
+          bubble.classList.add("answer-visible");
           cursor.remove();
-          bubble.innerHTML = renderMarkdown(answer);
+          answerEl.innerHTML = renderMarkdown(answer);
         }
       }
     }
     cursor.remove();
-    if (!bubble.innerHTML && answer) bubble.innerHTML = renderMarkdown(answer);
-    if (pendingSources) renderSources(pendingSources);
+    if (answer && !answerEl.innerHTML) answerEl.innerHTML = renderMarkdown(answer);
+    if (pendingSources && !sourcesPanelEl) sourcesPanelEl = renderSources(pendingSources);
     loadChats();  // refresh title/order after first message
   } catch (err) {
     cursor.remove();
-    bubble.textContent = (answer ? answer + "\n\n" : "") + "[Error] " + err.message;
+    bubble.classList.add("answer-visible");
+    answerEl.textContent = (answer ? answer + "\n\n" : "") + "[Error] " + err.message;
   } finally {
     state.streaming = false;
     sendBtn.disabled = false;

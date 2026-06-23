@@ -172,6 +172,12 @@ def parse_position(query: str) -> dict[str, Any]:
         hints["para_word_target"] = _to_int(m.group(1))
         hints["paragraph_index"] = _to_int(m.group(2)) - 1
 
+    # --- First word in a named paragraph (e.g. "first word in the submission instruction paragraph") ---
+    m = re.search(r"\bfirst\s+word\s+in\s+(?:the\s+)?(.+?)\s+paragraph\b", q)
+    if m and "para_word_target" not in hints:
+        hints["para_word_target"] = 1
+        hints["anchor_phrase"] = m.group(1).strip()
+
     # --- Nth word on page / in document ---
     m = re.search(rf"\b{_NUM_WORD}\s+word\s+on\s+(?:the\s+)?page\b", q)
     if m and "para_word_target" not in hints:
@@ -337,6 +343,15 @@ def _chunk_matches_hints(meta: dict, hints: dict) -> bool:
         if not (pws <= pwt <= pwe):
             return False
 
+    if hints.get("para_word_target") and hints.get("anchor_phrase") and hints.get("paragraph_index") is None:
+        phrase = hints["anchor_phrase"].lower()
+        if phrase not in text.lower():
+            return False
+        pwt = hints["para_word_target"]
+        pws, pwe = meta.get("para_word_start", 0), meta.get("para_word_end", 0)
+        if not (pws <= pwt <= pwe):
+            return False
+
     if hints.get("word_from_end"):
         dwc = meta.get("doc_word_count")
         dwe = meta.get("doc_word_end", meta.get("word_end"))
@@ -390,8 +405,11 @@ def post_filter_hits(hits: list, hints: dict) -> list:
             "anchor_word", "anchor_phrase", "anchor_direction",
             "para_word_target", "doc_word_target", "page_word_target",
             "word_from_end", "page_word_from_end", "para_position_on_page",
+            "paragraph_index",
         )
     )
+    if hints.get("para_word_target") and hints.get("anchor_phrase"):
+        needs_post = True
     if not needs_post:
         return hits
     filtered = [h for h in hits if _chunk_matches_hints(h.payload, hints)]
@@ -420,6 +438,12 @@ def boost_hits_by_position(hits: list, hints: dict) -> list:
             pwt = hints["para_word_target"]
             if pay.get("para_word_start", 0) <= pwt <= pay.get("para_word_end", 0):
                 s += 2.5
+        if hints.get("anchor_phrase"):
+            phrase = hints["anchor_phrase"].lower()
+            if phrase in pay.get("text", "").lower():
+                s += 3.5
+                if pay.get("chunk_kind") == "paragraph":
+                    s += 1.0
         if _chunk_matches_hints(pay, hints):
             s += 1.0
         return s

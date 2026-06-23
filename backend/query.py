@@ -137,6 +137,217 @@ def _chunk_dedupe_key(hit) -> tuple:
     )
 
 
+def _source_card_key(pay: dict) -> tuple:
+    """Unique key per retrieved chunk (including sliding windows)."""
+    return (
+        pay.get("file_id"),
+        pay.get("page"),
+        pay.get("paragraph_index"),
+        pay.get("chunk_kind"),
+        pay.get("doc_word_start", pay.get("word_start")),
+    )
+
+
+_QUERY_STOP = frozenset({
+    "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with",
+    "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "do",
+    "does", "did", "will", "would", "could", "should", "may", "might", "must",
+    "what", "which", "who", "whom", "this", "that", "these", "those", "it", "its",
+    "about", "tell", "give", "show", "find", "from", "into", "your", "you", "me",
+    "document", "pdf", "file", "page", "paragraph", "word", "summary", "summarize",
+})
+
+
+def _normalize_text(s: str) -> str:
+    s = (s or "").lower()
+    s = re.sub(r"[\u200c\u200d]", "", s)
+    s = re.sub(r"[^\w\s\u0600-\u06FF]", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _query_terms(query: str) -> list[str]:
+    terms = []
+    for w in re.findall(r"[\w\u0600-\u06FF]+", query.lower()):
+        if len(w) > 2 and w not in _QUERY_STOP:
+            terms.append(w)
+    return terms
+
+
+def _extract_numbers(text: str) -> list[str]:
+    return re.findall(r"\d[\d,./:-]*\d|\d+", text or "")
+
+
+def _number_in_chunk(num: str, chunk: str) -> str | None:
+    """Return the chunk's literal spelling of a number if present."""
+    if not num or not chunk:
+        return None
+    variants = {num, num.replace(",", ""), num.replace(".", "")}
+    for v in variants:
+        if not v:
+            continue
+        m = re.search(re.escape(v), chunk)
+        if m:
+            return m.group()
+    norm_chunk = _normalize_text(chunk)
+    norm_num = _normalize_text(num)
+    if norm_num and norm_num in norm_chunk.split():
+        for tok in chunk.split():
+            if _normalize_text(tok).strip(".,;:") == norm_num:
+                return tok.strip(".,;:")
+    return None
+
+
+def _find_phrase_in_chunk(chunk: str, norm_phrase: str) -> str | None:
+    if not norm_phrase or not chunk:
+        return None
+    phrase_words = norm_phrase.split()
+    if not phrase_words:
+        return None
+    words = chunk.split()
+    norm_words = [_normalize_text(w) for w in words]
+    n = len(phrase_words)
+    for i in range(len(norm_words) - n + 1):
+        if norm_words[i:i + n] == phrase_words:
+            return " ".join(words[i:i + n])
+    if len(norm_phrase) >= 3 and norm_phrase in _normalize_text(chunk):
+        m = re.search(re.escape(norm_phrase), _normalize_text(chunk))
+        if m:
+            return m.group()
+    return None
+
+
+def _dedupe_phrases(phrases: list[str]) -> list[str]:
+    seen: set = set()
+    out = []
+    for p in phrases:
+        p = (p or "").strip()
+        if not p:
+            continue
+        key = _normalize_text(p)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+    return out
+
+
+def _compute_highlight_phrases(
+    pay: dict,
+    query: str,
+    answer: str,
+    pos_hints: dict,
+    exact_word: str | None = None,
+) -> list[str]:
+    """Pick short, precise spans to highlight — numbers, dates, answer-aligned phrases."""
+    chunk = pay.get("text", "") or ""
+    if not chunk.strip():
+        return []
+
+    phrases: list[str] = []
+
+    if exact_word:
+        found = _find_phrase_in_chunk(chunk, _normalize_text(exact_word)) or exact_word
+        if found.lower() in chunk.lower() or _normalize_text(found) in _normalize_text(chunk):
+            return [found]
+
+    hinted = _extract_word_at_hint(pay, pos_hints)
+    if hinted:
+        phrases.append(hinted)
+
+    for num in _extract_numbers(answer):
+        lit = _number_in_chunk(num, chunk)
+        if lit:
+            phrases.append(lit)
+
+    for m in re.finditer(
+        r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+        r"Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+        r"\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{2,4}",
+        answer,
+        re.I,
+    ):
+        lit = m.group()
+        if lit.lower() in chunk.lower():
+            phrases.append(lit)
+
+    chunk_norm = _normalize_text(chunk)
+    for sent in re.split(r"[.!?\n]+", answer):
+        sent = sent.strip()
+        if len(sent) < 10:
+            continue
+        sent_norm = _normalize_text(sent)
+        words = sent_norm.split()
+        matched = False
+        for n in range(min(10, len(words)), 1, -1):
+            if matched:
+                break
+            for i in range(len(words) - n + 1):
+                sub = " ".join(words[i:i + n])
+                if len(sub) < 6:
+                    continue
+                found = _find_phrase_in_chunk(chunk, sub)
+                if found:
+                    phrases.append(found)
+                    matched = True
+                    break
+
+    for term in _query_terms(query):
+        if term in chunk_norm:
+            found = _find_phrase_in_chunk(chunk, term)
+            if found:
+                phrases.append(found)
+
+    if not phrases and pay.get("leading_words"):
+        lead = pay["leading_words"][:80].strip()
+        if lead:
+            phrases.append(lead)
+
+    return _dedupe_phrases(phrases)[:12]
+
+
+def _payload_to_source(pay: dict, highlight_phrases: list[str] | None = None) -> dict:
+    return {
+        "file_id": pay.get("file_id", ""),
+        "filename": pay.get("filename", ""),
+        "page": pay.get("page", ""),
+        "paragraph_index": pay.get("paragraph_index"),
+        "word_start": pay.get("doc_word_start", pay.get("word_start")),
+        "word_end": pay.get("doc_word_end", pay.get("word_end")),
+        "page_word_start": pay.get("page_word_start"),
+        "page_word_end": pay.get("page_word_end"),
+        "para_word_start": pay.get("para_word_start"),
+        "para_word_end": pay.get("para_word_end"),
+        "doc_word_count": pay.get("doc_word_count"),
+        "region": pay.get("region", ""),
+        "chunk_kind": pay.get("chunk_kind", ""),
+        "modality": pay.get("modality", ""),
+        "thumbnail": pay.get("thumbnail_b64", ""),
+        "text": pay.get("text", ""),
+        "highlight_phrases": highlight_phrases or [],
+    }
+
+
+def _collect_sources(
+    packed_hits: list,
+    query: str,
+    answer: str,
+    pos_hints: dict,
+    exact_word: str | None = None,
+) -> list:
+    """One source card per chunk sent to the generator, with answer-aware highlights."""
+    seen: set = set()
+    sources = []
+    for hit in packed_hits:
+        key = _chunk_dedupe_key(hit)
+        if key in seen:
+            continue
+        seen.add(key)
+        pay = hit.payload if hasattr(hit, "payload") else hit
+        highlights = _compute_highlight_phrases(pay, query, answer, pos_hints, exact_word)
+        sources.append(_payload_to_source(pay, highlights))
+    return sources
+
+
 def _dedupe_hits(hits: list) -> list:
     """Drop near-duplicate chunks (same paragraph/window) — keeps context clean."""
     seen: set = set()
@@ -160,23 +371,16 @@ def _should_skip_rerank(n_points: int, query: str, pos_hints: dict) -> bool:
         return True
     if pos_hints.get("paragraph_index") is not None or pos_hints.get("word_target"):
         return True
+    if pos_hints.get("anchor_phrase") or pos_hints.get("anchor_word"):
+        return True
     return False
-
-
-def _select_overview_hits(hits: list, top_k: int) -> list:
-    """Prefer one whole-page chunk plus top distinct paragraphs."""
-    hits = _dedupe_hits(hits)
-    full = [h for h in hits if (h.payload or {}).get("chunk_kind") == "page_full"]
-    rest = [h for h in hits if h not in full]
-    if full:
-        return full[:1] + rest[: max(1, top_k - 1)]
-    return rest[:top_k]
 
 
 def _is_overview_query(query: str) -> bool:
     q = query.lower().strip()
     return bool(re.search(
-        r"what('s| is)\s+(this|the|it)\s+(document|pdf|file|paper|assignment|text)\s+about|"
+        r"what('s| is)?\s+(this|the|it)\s+(document|pdf|file|paper|assignment|text)\s+(is\s+)?about|"
+        r"what\s+(this|the)\s+(document|pdf|file|paper|assignment|text)\s+(is\s+)?about|"
         r"what\s+is\s+(this|the)\s+about|"
         r"summarize|summary|overview|main\s+(idea|topic|point|theme)|"
         r"what\s+does\s+(this|the|it)\s+(say|discuss|cover)|"
@@ -222,6 +426,13 @@ def _extract_word_at_hint(pay: dict, hints: dict) -> str | None:
         if 0 <= idx < len(words):
             return words[idx]
 
+    if hints.get("para_word_target") and hints.get("anchor_phrase"):
+        phrase = hints["anchor_phrase"].lower()
+        if phrase in pay.get("text", "").lower():
+            idx = hints["para_word_target"] - pay.get("para_word_start", 1)
+            if 0 <= idx < len(words):
+                return words[idx]
+
     for key, target_key in (("doc_word_target", "doc_word_target"), ("word_target", "word_target")):
         if hints.get(target_key):
             idx = hints[target_key] - dws
@@ -261,6 +472,10 @@ def _build_generator_messages(
     return messages
 
 
+def _status(step: str, text: str) -> dict:
+    return {"type": "status", "step": step, "text": text}
+
+
 def _stream_generate(model, processor, messages, max_new_tokens: int):
     """Run model.generate in a thread; yield decoded token strings."""
     from transformers import TextIteratorStreamer
@@ -286,6 +501,39 @@ def _stream_generate(model, processor, messages, max_new_tokens: int):
     thread.join()
 
 
+async def _async_stream_generate(model, processor, messages, max_new_tokens: int):
+    """Yield tokens without blocking the event loop so SSE flushes incrementally."""
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[str | None] = asyncio.Queue()
+
+    def _producer():
+        try:
+            for token in _stream_generate(model, processor, messages, max_new_tokens):
+                loop.call_soon_threadsafe(queue.put_nowait, token)
+        finally:
+            loop.call_soon_threadsafe(queue.put_nowait, None)
+
+    Thread(target=_producer, daemon=True).start()
+    while True:
+        token = await queue.get()
+        if token is None:
+            break
+        yield token
+        await asyncio.sleep(0)
+
+
+async def _yield_text_stream(text: str):
+    """Stream a fixed string word-by-word (meta fast path)."""
+    if not text:
+        return
+    parts = re.findall(r"\S+\s*", text)
+    if not parts:
+        parts = [text]
+    for part in parts:
+        yield part
+        await asyncio.sleep(0)
+
+
 async def run_query(user_query: str, space_id: str, chat_id: str):
     """Async generator yielding event dicts for the chat stream."""
 
@@ -307,10 +555,14 @@ async def run_query(user_query: str, space_id: str, chat_id: str):
 
         fast = _meta_fast_answer(user_query)
         if fast:
-            yield {"type": "token", "text": fast}
+            yield _status("prepare", "Preparing response…")
+            yield _status("generate", "Generating response…")
+            async for part in _yield_text_stream(fast):
+                yield {"type": "token", "text": part}
             yield {"type": "done"}
             return
 
+        yield _status("prepare", "Preparing response…")
         system_prompt = (
             "You are a helpful assistant. Answer briefly and directly in one or two sentences. "
             "Reply in the same language the user writes in. "
@@ -319,7 +571,8 @@ async def run_query(user_query: str, space_id: str, chat_id: str):
         )
         messages = _build_generator_messages(system_prompt, hist_msgs, user_query)
         async with await manager.generator() as gen:
-            for token in _stream_generate(
+            yield _status("generate", "Generating response…")
+            async for token in _async_stream_generate(
                 gen["model"], gen["processor"], messages, META_MAX_NEW_TOKENS,
             ):
                 yield {"type": "token", "text": token}
@@ -329,7 +582,10 @@ async def run_query(user_query: str, space_id: str, chat_id: str):
     if count_points(space_id) == 0:
         yield {"type": "sources", "sources": []}
         yield {"type": "context", **context_status(estimate_tokens(user_query))}
-        yield {"type": "token", "text": "This space has no ingested documents yet. Add files in the Ingest tab first."}
+        async for part in _yield_text_stream(
+            "This space has no ingested documents yet. Add files in the Ingest tab first."
+        ):
+            yield {"type": "token", "text": part}
         yield {"type": "done"}
         return
 
@@ -338,7 +594,7 @@ async def run_query(user_query: str, space_id: str, chat_id: str):
     overview = _is_overview_query(user_query)
     top_k_retrieve, top_k_final = _top_k_for_space(n_points, overview)
 
-    yield {"type": "status", "text": "Embedding your question…"}
+    yield _status("embed", "Embedding query…")
 
     async with await manager.embedder() as embedder:
         q_vec = await asyncio.to_thread(
@@ -349,7 +605,7 @@ async def run_query(user_query: str, space_id: str, chat_id: str):
         )
         q_vec = q_vec[0]
 
-    yield {"type": "status", "text": "Searching documents…"}
+    yield _status("search", "Searching documents…")
 
     hits = hybrid_search(q_vec, user_query, space_id, top_k=top_k_retrieve, pos_hints=pos_hints)
     hits = post_filter_hits(hits, pos_hints)
@@ -359,15 +615,16 @@ async def run_query(user_query: str, space_id: str, chat_id: str):
     if not hits:
         yield {"type": "sources", "sources": []}
         yield {"type": "context", **context_status(estimate_tokens(user_query))}
-        yield {"type": "token", "text": "I couldn't find anything relevant in this space."}
+        async for part in _yield_text_stream("I couldn't find anything relevant in this space."):
+            yield {"type": "token", "text": part}
         yield {"type": "done"}
         return
 
     if _should_skip_rerank(n_points, user_query, pos_hints):
-        yield {"type": "status", "text": "Selecting passages…"}
+        yield _status("rank", "Selecting passages…")
         reranked_hits = hits[:top_k_final]
     else:
-        yield {"type": "status", "text": "Reranking passages…"}
+        yield _status("rank", "Ranking passages…")
         async with await manager.reranker() as reranker:
             docs = [_doc_text_for_rerank(h.payload) for h in hits]
             pairs = [(user_query, d) for d in docs]
@@ -378,17 +635,13 @@ async def run_query(user_query: str, space_id: str, chat_id: str):
             ranked = np.argsort(scores)[::-1][:top_k_final]
         reranked_hits = [hits[i] for i in ranked]
 
-    if overview:
-        reranked_hits = _select_overview_hits(reranked_hits, top_k_final)
-
     used = hist_tokens + estimate_tokens(user_query) + 200
     packed_hits, retr_tokens = pack_retrieval_chunks(reranked_hits, MAX_CONTEXT_TOKENS, used)
     used += retr_tokens
 
     yield {"type": "context", **context_status(used, summarized=summarized)}
 
-    context_parts, sources = [], []
-    seen_sources: set = set()
+    context_parts = []
     count_fact = word_count_answer(reranked_hits, pos_hints)
     exact_word = _extract_word_at_hint(reranked_hits[0].payload, pos_hints) if reranked_hits else None
 
@@ -400,37 +653,17 @@ async def run_query(user_query: str, space_id: str, chat_id: str):
 
     for hit in packed_hits:
         pay = hit.payload
-        src_key = _chunk_dedupe_key(hit)
         header = _format_source_header(pay)
         facts = _position_facts_for_chunk(pay)
         if pay.get("modality") == "text":
             context_parts.append(f"[SOURCE: {header}]\n{facts}\n{pay.get('text', '')}")
         else:
             context_parts.append(f"[SOURCE: {header}]")
-        if src_key in seen_sources:
-            continue
-        seen_sources.add(src_key)
-        sources.append({
-            "file_id": pay.get("file_id", ""),
-            "filename": pay.get("filename", ""),
-            "page": pay.get("page", ""),
-            "paragraph_index": pay.get("paragraph_index"),
-            "word_start": pay.get("doc_word_start", pay.get("word_start")),
-            "word_end": pay.get("doc_word_end", pay.get("word_end")),
-            "page_word_start": pay.get("page_word_start"),
-            "page_word_end": pay.get("page_word_end"),
-            "para_word_start": pay.get("para_word_start"),
-            "para_word_end": pay.get("para_word_end"),
-            "doc_word_count": pay.get("doc_word_count"),
-            "region": pay.get("region", ""),
-            "chunk_kind": pay.get("chunk_kind", ""),
-            "modality": pay.get("modality", ""),
-            "thumbnail": pay.get("thumbnail_b64", ""),
-            "text": pay.get("text", ""),
-        })
     context_str = "\n\n---\n\n".join(context_parts)
     if prefix_lines:
         context_str = "\n".join(prefix_lines) + "\n\n---\n\n" + context_str
+
+    yield _status("prepare", "Preparing response…")
 
     async with await manager.generator() as gen:
         system_prompt = (
@@ -458,8 +691,16 @@ async def run_query(user_query: str, space_id: str, chat_id: str):
         messages = _build_generator_messages(system_prompt, hist_msgs, user_query, context_str)
 
         max_tokens = SUMMARY_MAX_NEW_TOKENS if overview else MAX_NEW_TOKENS
-        yield {"type": "status", "text": "Writing answer…"}
-        yield {"type": "sources", "sources": sources}
-        for token in _stream_generate(gen["model"], gen["processor"], messages, max_tokens):
+        yield _status("generate", "Generating response…")
+        answer_parts: list[str] = []
+        async for token in _async_stream_generate(
+            gen["model"], gen["processor"], messages, max_tokens,
+        ):
+            answer_parts.append(token)
             yield {"type": "token", "text": token}
+        full_answer = "".join(answer_parts)
+        sources = _collect_sources(
+            packed_hits, user_query, full_answer, pos_hints, exact_word,
+        )
+        yield {"type": "sources", "sources": sources}
         yield {"type": "done"}

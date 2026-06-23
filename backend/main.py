@@ -44,7 +44,8 @@ app.add_middleware(
 
 
 def _sse(payload: dict) -> str:
-    return f"data: {json.dumps(payload)}\n\n"
+    # Leading comment helps proxies flush each event promptly.
+    return f":\ndata: {json.dumps(payload)}\n\n"
 
 
 @app.get("/health")
