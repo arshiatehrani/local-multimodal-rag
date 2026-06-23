@@ -9,6 +9,7 @@ from threading import Thread
 
 import numpy as np
 
+import spaces
 from model_manager import manager
 from qdrant_store import search, count_points
 
@@ -94,6 +95,13 @@ async def run_query(user_query: str, space_id: str):
             "If the answer is not in the context, say so clearly. "
             "Cite sources by filename and page number."
         )
+        # Append this space's custom instructions (output format, persona, etc).
+        try:
+            custom = (spaces.get_space(space_id).get("system_prompt") or "").strip()
+        except Exception:
+            custom = ""
+        if custom:
+            system_prompt += "\n\nAdditional instructions for this space:\n" + custom
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"Context:\n{context_str}\n\nQuestion: {user_query}"},

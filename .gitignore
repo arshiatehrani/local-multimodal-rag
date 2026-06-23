@@ -7,6 +7,9 @@ qdrant_data/
 # User data: uploaded files, per-space media, and saved chats
 spaces/
 
+# Reusable system-prompt library
+prompts/
+
 # Python
 __pycache__/
 *.py[cod]

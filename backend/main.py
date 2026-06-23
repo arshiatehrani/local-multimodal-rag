@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
 
 import spaces
+import prompts
 from qdrant_store import ensure_collection, delete_by_file, delete_by_space
 from ingest import ingest_file, is_supported
 from query import run_query
@@ -64,6 +65,19 @@ def list_spaces():
 def get_space(space_id: str):
     try:
         return spaces.get_space(space_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Space not found")
+
+
+class UpdateSpaceRequest(BaseModel):
+    name: str | None = None
+    system_prompt: str | None = None
+
+
+@app.patch("/spaces/{space_id}")
+def update_space(space_id: str, req: UpdateSpaceRequest):
+    try:
+        return spaces.update_space(space_id, name=req.name, system_prompt=req.system_prompt)
     except KeyError:
         raise HTTPException(status_code=404, detail="Space not found")
 
@@ -170,6 +184,51 @@ def get_chat(space_id: str, chat_id: str):
 @app.delete("/spaces/{space_id}/chats/{chat_id}")
 def delete_chat(space_id: str, chat_id: str):
     spaces.delete_chat(space_id, chat_id)
+    return {"status": "ok"}
+
+
+# --------------------------------------------------------------------------- #
+# Prompt library (reusable system prompts, shared across spaces)
+# --------------------------------------------------------------------------- #
+class CreatePromptRequest(BaseModel):
+    name: str = ""
+    content: str = ""
+
+
+class UpdatePromptRequest(BaseModel):
+    name: str | None = None
+    content: str | None = None
+
+
+@app.get("/prompts")
+def list_prompts():
+    return {"prompts": prompts.list_prompts()}
+
+
+@app.post("/prompts")
+def create_prompt(req: CreatePromptRequest):
+    return prompts.create_prompt(req.name, req.content)
+
+
+@app.get("/prompts/{prompt_id}")
+def get_prompt(prompt_id: str):
+    try:
+        return prompts.get_prompt(prompt_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+
+
+@app.patch("/prompts/{prompt_id}")
+def update_prompt(prompt_id: str, req: UpdatePromptRequest):
+    try:
+        return prompts.update_prompt(prompt_id, name=req.name, content=req.content)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+
+
+@app.delete("/prompts/{prompt_id}")
+def delete_prompt(prompt_id: str):
+    prompts.delete_prompt(prompt_id)
     return {"status": "ok"}
 
 

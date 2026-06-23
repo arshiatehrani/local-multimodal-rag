@@ -97,9 +97,23 @@ def create_space(name: str) -> dict:
         data = {
             "id": space_id,
             "name": name,
+            "system_prompt": "",
             "created_at": _now(),
             "files": [],
         }
+        _write_json(_space_json(space_id), data)
+    return data
+
+
+def update_space(space_id: str, name: str | None = None,
+                 system_prompt: str | None = None) -> dict:
+    """Update a space's name and/or its per-space system prompt (instructions)."""
+    with _lock:
+        data = get_space(space_id)
+        if name is not None and name.strip():
+            data["name"] = name.strip()
+        if system_prompt is not None:
+            data["system_prompt"] = system_prompt
         _write_json(_space_json(space_id), data)
     return data
 
