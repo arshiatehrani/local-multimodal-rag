@@ -336,7 +336,12 @@ def store_file_bytes(space_id: str, file_bytes: bytes, original_name: str) -> di
     }
 
 
-def register_file(space_id: str, record: dict, n_chunks: int) -> dict:
+def register_file(
+    space_id: str,
+    record: dict,
+    n_chunks: int,
+    text_stats: dict | None = None,
+) -> dict:
     """Add a stored file (with its chunk count) to space.json."""
     with _lock:
         data = get_space(space_id)
@@ -348,6 +353,8 @@ def register_file(space_id: str, record: dict, n_chunks: int) -> dict:
             "n_chunks": n_chunks,
             "added_at": _now(),
         }
+        if text_stats:
+            entry["text_stats"] = text_stats
         data["files"].append(entry)
         _write_json(_space_json_path(space_id), data)
     return entry

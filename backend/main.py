@@ -154,9 +154,11 @@ async def upload_files(space_id: str, files: list[UploadFile] = File(...)):
                 })
                 record = spaces.store_file_bytes(space_id, contents, name)
                 n = 0
+                text_stats = None
                 async for ev in ingest_file_stream(contents, name, space_id, record["file_id"]):
                     if ev.get("type") == "complete":
                         n = int(ev.get("chunks", 0))
+                        text_stats = ev.get("text_stats")
                         inner_pct = 100
                         text = ev.get("text", "Complete")
                     else:
@@ -173,7 +175,7 @@ async def upload_files(space_id: str, files: list[UploadFile] = File(...)):
                         "stage": ev.get("stage", "embed"),
                     })
 
-                spaces.register_file(space_id, record, n)
+                spaces.register_file(space_id, record, n, text_stats=text_stats)
                 results.append({
                     "filename": name,
                     "status": "ok",

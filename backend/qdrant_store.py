@@ -56,6 +56,11 @@ def ensure_collection():
         "para_position_on_page": PayloadSchemaType.KEYWORD,
         "page_position": PayloadSchemaType.KEYWORD,
         "leading_words": PayloadSchemaType.TEXT,
+        "chunk_kind": PayloadSchemaType.KEYWORD,
+        "modality": PayloadSchemaType.KEYWORD,
+        "doc_char_count": PayloadSchemaType.INTEGER,
+        "doc_comma_count": PayloadSchemaType.INTEGER,
+        "page_char_count": PayloadSchemaType.INTEGER,
     }
     for field, schema in indexes.items():
         try:
@@ -236,6 +241,68 @@ def count_points(space_id: str) -> int:
         ).count
     except Exception:
         return 0
+
+
+def scroll_payloads(
+    space_id: str,
+    *,
+    chunk_kind: str | None = None,
+    modality: str | None = None,
+    limit: int = 4096,
+) -> list[dict]:
+    """Scroll all payloads in a space (for precise character/word aggregation)."""
+    must = [FieldCondition(key="space_id", match=MatchValue(value=space_id))]
+    if chunk_kind:
+        must.append(FieldCondition(key="chunk_kind", match=MatchValue(value=chunk_kind)))
+    if modality:
+        must.append(FieldCondition(key="modality", match=MatchValue(value=modality)))
+
+    flt = Filter(must=must)
+    out: list[dict] = []
+    offset = None
+    while len(out) < limit:
+        batch_limit = min(256, limit - len(out))
+        records, offset = client.scroll(
+            collection_name=COLLECTION,
+            scroll_filter=flt,
+            limit=batch_limit,
+            offset=offset,
+            with_payload=True,
+            with_vectors=False,
+        )
+        for rec in records:
+            if rec.payload:
+                out.append(rec.payload)
+        if offset is None or not records:
+            break
+    return out
+
+
+def get_space_file_stats(space_id: str) -> list[dict]:
+    """Return text_stats records for all files in a space (from Qdrant payloads)."""
+    payloads = scroll_payloads(space_id, chunk_kind="document_stats", modality="text", limit=64)
+    if payloads:
+        return payloads
+    payloads = scroll_payloads(space_id, chunk_kind="page_full", modality="text", limit=512)
+    seen: set = set()
+    out = []
+    for pay in payloads:
+        fid = pay.get("file_id")
+        if not fid or fid in seen:
+            continue
+        seen.add(fid)
+        out.append(pay)
+    return out
+
+
+def get_text_chunks_for_count(space_id: str, hints: dict | None = None) -> list[dict]:
+    """Fetch canonical page/paragraph text blobs for character counting."""
+    hints = hints or {}
+    payloads = scroll_payloads(space_id, chunk_kind="page_full", modality="text")
+    if not payloads:
+        payloads = scroll_payloads(space_id, modality="text")
+    from positioning import filter_chunks_for_char_count
+    return filter_chunks_for_char_count(payloads, hints)
 
 
 def delete_by_file(file_id: str) -> None:

@@ -16,6 +16,11 @@ from PIL import Image
 import fitz  # pymupdf
 
 from model_manager import manager
+from document_stats import (
+    attach_stats_to_meta,
+    build_stats_summary_text,
+    compute_text_stats,
+)
 from positioning import (
     build_text_chunk_meta,
     tokenize_words,
@@ -150,8 +155,9 @@ def _thumbnail_b64(pil_img: Image.Image) -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
-def process_pdf(file_bytes: bytes, filename: str) -> list:
+def process_pdf(file_bytes: bytes, filename: str) -> tuple[list, dict | None]:
     items = []
+    page_texts: dict[int, str] = {}
     doc = fitz.open(stream=file_bytes, filetype="pdf")
     total_pages = len(doc)
     doc_word_cursor = 0
@@ -167,21 +173,23 @@ def process_pdf(file_bytes: bytes, filename: str) -> list:
         page_no = page_num + 1
         page_from_end = total_pages - page_num
         full_text = (page.get_text("text") or "").strip()
+        page_texts[page_no] = full_text
         paragraphs = page_paragraphs[page_num]
         paragraph_count_page = len(paragraphs)
         page_word_count = word_count(full_text)
         page_word_cursor = 1
 
-        if total_pages == 1 and full_text:
+        if full_text:
             words = tokenize_words(full_text)
             items.append(_make_text_item(
                 full_text, filename, page_no, total_pages,
-                paragraph_index=0, global_paragraph_index=0,
+                paragraph_index=0, global_paragraph_index=global_para_idx,
                 paragraph_count_page=paragraph_count_page,
                 paragraph_count_doc=paragraph_count_doc,
                 region="body", chunk_kind="page_full",
-                doc_word_start=1, page_word_start=1, para_word_start=1,
+                doc_word_start=doc_word_cursor + 1, page_word_start=1, para_word_start=1,
                 page_word_count=page_word_count,
+                doc_word_count=None,
                 para_word_count=len(words),
             ))
 
@@ -247,15 +255,48 @@ def process_pdf(file_bytes: bytes, filename: str) -> list:
             })
     doc.close()
 
-    doc_word_count = doc_word_cursor
+    doc_text = "\n\n".join(page_texts[p] for p in sorted(page_texts) if page_texts[p])
+    doc_stats = compute_text_stats(doc_text) if doc_text else None
+    page_stats_map = {
+        p: compute_text_stats(t) for p, t in page_texts.items() if t
+    }
+
+    if doc_stats and doc_stats.get("word_count", 0) > 0:
+        summary = build_stats_summary_text(
+            filename,
+            doc_stats,
+            total_pages=total_pages,
+            paragraph_count_doc=paragraph_count_doc,
+        )
+        stats_item = _make_text_item(
+            summary, filename, 1, total_pages,
+            paragraph_index=0, global_paragraph_index=0,
+            paragraph_count_page=0, paragraph_count_doc=paragraph_count_doc,
+            region="body", chunk_kind="document_stats",
+            doc_word_start=1, page_word_start=1, para_word_start=1,
+            page_word_count=doc_stats["word_count"],
+            doc_word_count=doc_stats["word_count"],
+            para_word_count=doc_stats["word_count"],
+        )
+        attach_stats_to_meta(stats_item["meta"], doc_stats, page_stats_map.get(1))
+        items.insert(0, stats_item)
+
+    doc_word_total = doc_stats["word_count"] if doc_stats else doc_word_cursor
     for item in items:
-        if item["type"] == "text":
-            item["meta"]["doc_word_count"] = doc_word_count
+        if item["type"] != "text":
+            continue
+        page_no = int(item["meta"].get("page") or 1)
+        attach_stats_to_meta(
+            item["meta"],
+            doc_stats,
+            page_stats_map.get(page_no),
+        )
+        item["meta"]["doc_word_count"] = doc_word_total
 
-    return items
+    return items, doc_stats
 
 
-def process_image(file_bytes: bytes, filename: str) -> list:
+def process_image(file_bytes: bytes, filename: str) -> tuple[list, dict | None]:
     pil_img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
     return [{
         "type": "image",
@@ -266,10 +307,10 @@ def process_image(file_bytes: bytes, filename: str) -> list:
             "modality": "image",
             "thumbnail_b64": _thumbnail_b64(pil_img),
         },
-    }]
+    }], None
 
 
-def process_video(file_bytes: bytes, filename: str) -> list:
+def process_video(file_bytes: bytes, filename: str) -> tuple[list, dict | None]:
     import cv2
 
     items = []
@@ -304,10 +345,10 @@ def process_video(file_bytes: bytes, filename: str) -> list:
             os.unlink(tmp_path)
         except OSError:
             pass
-    return items
+    return items, None
 
 
-def _items_from_bytes(file_bytes: bytes, filename: str) -> list:
+def _items_from_bytes(file_bytes: bytes, filename: str) -> tuple[list, dict | None]:
     ext = Path(filename).suffix.lower()
     if ext == ".pdf":
         return process_pdf(file_bytes, filename)
@@ -323,9 +364,9 @@ async def ingest_file_stream(file_bytes: bytes, filename: str, space_id: str, fi
     ensure_collection()
     yield {"type": "progress", "pct": 5, "text": "Processing document…", "stage": "process"}
 
-    items = await asyncio.to_thread(_items_from_bytes, file_bytes, filename)
+    items, text_stats = await asyncio.to_thread(_items_from_bytes, file_bytes, filename)
     if not items:
-        yield {"type": "complete", "chunks": 0, "pct": 100, "text": "No content extracted"}
+        yield {"type": "complete", "chunks": 0, "pct": 100, "text": "No content extracted", "text_stats": None}
         return
 
     total = len(items)
@@ -384,6 +425,7 @@ async def ingest_file_stream(file_bytes: bytes, filename: str, space_id: str, fi
         "chunks": len(all_vectors),
         "pct": 100,
         "text": f"Stored {len(all_vectors)} chunk{'s' if len(all_vectors) != 1 else ''}",
+        "text_stats": text_stats,
     }
 
 

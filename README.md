@@ -26,6 +26,8 @@ isolated vector search, saved chats, and an editable system prompt. A reusable
   - [Hybrid search & reranking](#hybrid-search--reranking)
   - [Context window & history](#context-window--history)
   - [Positional metadata architecture](#positional-metadata-architecture)
+  - [Document statistics at ingest](#document-statistics-at-ingest)
+  - [Character & punctuation counting](#character--punctuation-counting)
   - [Sources & PDF highlights](#sources--pdf-highlights)
   - [SSE streaming protocol](#sse-streaming-protocol)
   - [Frontend architecture](#frontend-architecture)
@@ -55,7 +57,7 @@ isolated vector search, saved chats, and an editable system prompt. A reusable
 | **Privacy** | 100% local inference; backend binds `127.0.0.1` by default |
 | **Multimodal** | PDF text + embedded images · standalone images · video keyframes (~1 fps) |
 | **Retrieval** | Dense vectors + keyword match → RRF merge → cross-encoder rerank |
-| **Grounding** | Positional metadata per chunk · adaptive source cards · phrase PDF highlights |
+| **Grounding** | Positional metadata per chunk · adaptive source cards · phrase + **character-level** PDF highlights |
 | **GPU target** | ~6 GB VRAM with all three models in NF4 4-bit (`PRELOAD_MODELS=all`) |
 
 **Typical flow:** create a Space → upload files (progress bar) → wait for **models
@@ -101,8 +103,8 @@ yellow phrase highlights.
   Each card shows precise location labels and quoted **highlight phrases** extracted
   from the answer.
 - **Precise PDF highlights** — the viewer marks specific words/phrases (numbers,
-  dates, answer-aligned snippets), not whole paragraphs. Asking about a number
-  highlights that number in the PDF.
+  dates, answer-aligned snippets), or **every matching character** (commas, letter
+  *s*, etc.) for count questions — not whole paragraphs.
 - **Chat history** — prior turns are passed to the generator; older history is
   compact-summarized when the context budget fills.
 - **Context ring** — a circular gauge beside the input shows how much of the ~8k token
@@ -239,14 +241,14 @@ flowchart TD
   B -->|Video| E[process_video · ~1 fps keyframes]
 
   C --> F[Paragraph split per page]
+  F --> PF[page_full chunk per page]
   F --> G[128-word windows · 32 overlap]
-  G --> H[build_text_chunk_meta]
-  H --> I[Positional payload]
+  PF --> H[Positional payload]
+  G --> H
+  H --> K[Embedder batch · EMBED_BATCH=4]
 
   D --> J[Image chunk + thumbnail]
   E --> J
-
-  I --> K[Embedder batch · EMBED_BATCH=4]
   J --> K
   K --> L[(Qdrant upsert)]
   C --> M[(spaces/media/ original file)]
@@ -436,27 +438,123 @@ flowchart TB
 Natural-language queries map to the right scope — see
 [Positional & precise queries](#positional--precise-queries).
 
-### Sources & PDF highlights
+### Document statistics at ingest
 
-Sources are derived **after** generation so highlights align with the actual answer.
+Every PDF is analyzed **once at upload**. Counts are stored in three places so the
+system never has to guess:
 
 ```mermaid
 flowchart LR
-  Pack[packed_hits in context] --> Gen[Generator stream]
-  Gen --> Ans[Full answer text]
-  Ans --> Col[_collect_sources]
-  Col --> HL[_compute_highlight_phrases]
-  HL --> SSE[sources event]
-  SSE --> Cards[Source cards in UI]
-  Cards --> PDF[PDF.js yellow overlays]
+  PDF[PDF upload] --> Compute[compute_text_stats]
+  Compute --> SpaceJSON[space.json · text_stats per file]
+  Compute --> Chunks[Every chunk payload · doc_* and page_* fields]
+  Compute --> StatsChunk[document_stats retrieval chunk]
+
+  SpaceJSON --> Context[Injected into every RAG prompt]
+  Chunks --> Context
+  StatsChunk --> Search[Retrieved for count questions]
 ```
 
-**Highlight priority** (in [`query.py`](backend/query.py)):
+**Per document (stored on every text chunk and in `space.json`):**
+
+| Field | Example |
+|-------|---------|
+| `word_count` | 8426 |
+| `char_count` / `char_count_no_space` | 51234 / 48901 |
+| `whitespace_count`, `line_count`, `paragraph_count` | 2333, 412, 156 |
+| `comma_count`, `period_count`, … | 842, 512, … |
+| `letter_a_count` … `letter_z_count` | Full alphabet frequencies |
+
+**In every chat answer**, the generator receives a `[DOCUMENT STATISTICS — precise
+counts computed at ingest]` block summarizing each file, plus per-chunk `Stats:
+doc_words=…, doc_chars=…, doc_commas=…` lines on retrieved passages.
+
+**Dedicated `document_stats` chunk** — a human-readable summary embedded and stored in
+Qdrant so queries like *“how many words?”* retrieve the authoritative block directly.
+
+> **Re-upload PDFs** after upgrading to populate `text_stats` in `space.json` and the
+> new payload fields. Old vectors still work but lack full statistics until re-ingested.
+
+Module: [`backend/document_stats.py`](backend/document_stats.py).
+
+### Character & punctuation counting
+
+Questions like *“how many commas in the text?”* or *“number of letter s”* bypass the
+generator entirely. The backend counts characters **deterministically** from ingested
+text and returns one source card per page with every match highlighted in the PDF.
+
+```mermaid
+flowchart TD
+  Q[User: how many commas?] --> Parse[parse_position · wants_char_count]
+  Parse --> Scroll[scroll page_full chunks in Qdrant]
+  Scroll --> Count[count_character_matches per page]
+  Count --> Ans[Deterministic answer · **N** commas]
+  Count --> Src[Source per page · highlight_mode=chars]
+  Src --> PDF[PDF.js char-level overlays]
+
+  subgraph Ingest["At ingest (every PDF page)"]
+    Page[page.get_text] --> PF[chunk_kind: page_full]
+    PF --> Qdrant[(Qdrant)]
+  end
+```
+
+| You ask | Parsed target | Highlight mode |
+|---------|---------------|----------------|
+| `how many commas` / `number of commas` | `char_target = ","` | Every `,` on each page |
+| `how many letter s` / `number of s letters` | `char_target = "s"`, case-insensitive | Every `s` / `S` |
+| `how many periods` / `question marks` | `.` / `?` / named punctuation | Each literal character |
+| `how many ","` (quoted) | Exact character | Literal match |
+
+**Scope** (same as word-count questions): whole document (default), a specific page
+(`on page 5`), or a paragraph when paragraph hints are present.
+
+**Chunking requirement:** each PDF page is stored as a `page_full` text chunk at ingest
+(in addition to paragraph/window chunks). **Re-upload PDFs** after upgrading so
+multi-page documents get accurate per-page text for counting. Without `page_full`
+chunks, the system falls back to deduplicated paragraph text (usually still correct,
+but page boundaries are cleaner with `page_full`).
+
+Implementation: [`positioning.py`](backend/positioning.py)
+(`_parse_char_count_hints`, `build_char_count_sources`),
+[`qdrant_store.py`](backend/qdrant_store.py) (`scroll_payloads`,
+`get_text_chunks_for_count`), [`query.py`](backend/query.py) (deterministic branch),
+[`frontend/app.html`](frontend/app.html) (`applyPdfCharHighlights`).
+
+### Sources & PDF highlights
+
+Most answers derive highlights **after** generation so phrase overlays align with the
+answer text. **Character-count questions** are the exception: highlights are computed
+from the precise count pass and mark **every** matching character on each page.
+
+```mermaid
+flowchart LR
+  subgraph Phrase["Phrase / RAG answers"]
+    Pack[packed_hits] --> Gen[Generator stream]
+    Gen --> Ans[Full answer]
+    Ans --> Col[_collect_sources]
+    Col --> HL[_compute_highlight_phrases]
+  end
+
+  subgraph Char["Character-count answers"]
+    Scroll[page_full chunks] --> Cnt[build_char_count_sources]
+    Cnt --> Src[highlight_mode=chars]
+  end
+
+  HL --> PDF[PDF.js overlays]
+  Src --> PDF
+```
+
+**Phrase highlight priority** (in [`query.py`](backend/query.py)):
 
 1. Exact positional target from parsed query
 2. Numbers and dates appearing in both answer and chunk
 3. Short answer phrases found verbatim in the chunk
 4. Query keywords present in the chunk
+
+**Character highlights** use raw PDF text items (punctuation is **not** stripped).
+Each matching character gets its own yellow overlay box via `applyPdfCharHighlights`.
+Source cards show `42 × comma · all matches highlighted` and open the PDF with every
+comma on that page marked.
 
 ### SSE streaming protocol
 
@@ -698,7 +796,8 @@ spaces/<folder_name>/
 
 Each chat JSON stores `{ id, title, messages[], created_at }`. Assistant messages
 include optional `sources[]` (filename, page, positional fields, highlight phrases,
-thumbnail).
+thumbnail). Each file entry in `space.json` may include **`text_stats`** — authoritative
+word, character, punctuation, and letter-frequency counts computed at ingest.
 
 Space folder names are human-readable (`test`, `my-project__a1b2c3d4`). The stable
 UUID in `space.json` is what Qdrant filters on.
@@ -961,13 +1060,15 @@ flowchart LR
 | `header` / `footer` / `title` | `region` filter |
 | `first` / `last paragraph` on a page | `para_position_on_page` |
 | `how many words` | precise count from ingest metadata |
+| `how many commas` / `number of letter s` | deterministic char count + per-page char highlights (see [Character & punctuation counting](#character--punctuation-counting)) |
 
 ### Chunking rules
 
 Implemented in [`backend/ingest.py`](backend/ingest.py):
 
 - **128-word** windows, **32-word** overlap, split by PDF paragraph first.
-- **Single-page PDFs** also get a **`page_full`** chunk for broad questions.
+- **`page_full` chunk** on **every PDF page** (full page text for overviews and character counts).
+- **Single-page PDFs** still benefit from both `page_full` and paragraph chunks.
 - PDF layout blocks infer **header / body / footer** regions via y-position.
 - Tokenizer: `\S+` regex — all word counts use the same definition as positional queries.
 
@@ -1031,7 +1132,12 @@ See [SSE event types](#sse-event-types-post-chat) above.
 | `page_word_start/end`, `word_start/end` (doc) | Word ranges |
 | `para_word_start/end` | Paragraph-relative words |
 | `region`, `chunk_kind`, `modality` | Layout / type |
-| `highlight_phrases` | Strings to mark in PDF viewer |
+| `highlight_phrases` | Strings to mark in PDF viewer (phrase mode) |
+| `highlight_mode` | `"chars"` for character-level highlights, else phrase mode |
+| `highlight_chars` | Characters to mark when `highlight_mode=chars` (e.g. `[","]`) |
+| `char_case_insensitive` | Letter counts match both cases when true |
+| `char_match_count` | Matches on this source's page |
+| `char_target_label` | Human label (`comma`, `letter "S"`, …) |
 | `thumbnail` | Base64 JPEG for image/video sources |
 | `text` | Chunk text preview |
 
@@ -1095,7 +1201,7 @@ flowchart LR
 ```powershell
 conda activate p
 cd backend
-python -m pytest test_meta_query.py -q
+python -m pytest test_meta_query.py test_char_count.py -q
 ```
 
 ### Restart after code changes
@@ -1175,8 +1281,13 @@ and document-global terms — showing both prevents the confusion of mixing page
 paragraph numbers with document-wide word counts.
 
 **Why sources after generation?**  
-Highlight phrases are chosen from the **actual answer text**, so PDF overlays match what
-the user read — not just what was retrieved.
+Highlight phrases for normal answers are chosen from the **actual answer text**, so PDF
+overlays match what the user read — not just what was retrieved. Character-count
+questions skip generation and highlight every literal match instead.
+
+**Why page_full chunks?**  
+Counting commas or letters requires the full page text without window overlap.
+One `page_full` chunk per PDF page makes scroll-and-count fast and exact.
 
 **Why SSE instead of WebSockets?**  
 One-directional token streams and progress events map cleanly to SSE; no bidirectional

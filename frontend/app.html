@@ -1613,7 +1613,7 @@ function addBubble(role, text, asMarkdown) {
 }
 
 /* ---------- PDF source viewer ---------- */
-let pdfDoc = null, pdfPageNum = 1, pdfHighlightPhrases = [];
+let pdfDoc = null, pdfPageNum = 1, pdfCurrentSource = null;
 let pdfSources = [], pdfSourceIdx = 0, pdfFileId = null;
 
 function normalizeForMatch(s) {
@@ -1679,9 +1679,55 @@ function findMatchRange(pageNorm, chunkNorm, minLen) {
   return null;
 }
 
-async function applyPdfHighlights(page, viewport, hlLayer, phraseList) {
+async function applyPdfCharHighlights(page, viewport, hlLayer, source) {
   hlLayer.innerHTML = "";
-  const phrases = (Array.isArray(phraseList) ? phraseList : [phraseList]).filter(Boolean);
+  const chars = (source.highlight_chars || []).filter(Boolean);
+  if (!chars.length) return;
+
+  const caseInsensitive = !!source.char_case_insensitive;
+  const textContent = await page.getTextContent();
+  const scale = viewport.scale;
+
+  function charMatches(ch) {
+    for (const t of chars) {
+      if (caseInsensitive && t.length === 1 && /[a-z]/i.test(t)) {
+        if (ch.toLowerCase() === t.toLowerCase()) return true;
+      } else if (ch === t) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  for (const item of textContent.items) {
+    const raw = item.str || "";
+    if (!raw) continue;
+    const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
+    const h = Math.sqrt(tx[2] * tx[2] + tx[3] * tx[3]) || 10;
+    const totalW = Math.max(item.width * scale, h * 0.45 * raw.length);
+    const charW = raw.length ? totalW / raw.length : h * 0.45;
+
+    for (let i = 0; i < raw.length; i++) {
+      if (!charMatches(raw[i])) continue;
+      const div = document.createElement("div");
+      div.className = "hl";
+      div.style.left = `${tx[4] + i * charW}px`;
+      div.style.top = `${tx[5] - h}px`;
+      div.style.width = `${Math.max(charW * 0.92, 3)}px`;
+      div.style.height = `${h + 2}px`;
+      hlLayer.appendChild(div);
+    }
+  }
+}
+
+async function applyPdfHighlights(page, viewport, hlLayer, sourceOrPhrases) {
+  if (sourceOrPhrases && sourceOrPhrases.highlight_mode === "chars") {
+    return applyPdfCharHighlights(page, viewport, hlLayer, sourceOrPhrases);
+  }
+  hlLayer.innerHTML = "";
+  const phrases = (Array.isArray(sourceOrPhrases)
+    ? sourceOrPhrases
+    : pickHighlightPhrases(sourceOrPhrases || {})).filter(Boolean);
   if (!phrases.length) return;
 
   const textContent = await page.getTextContent();
@@ -1752,7 +1798,7 @@ async function loadPdfSourceAt(idx) {
   const source = pdfSources[idx];
   if (!source) return;
   pdfSourceIdx = idx;
-  pdfHighlightPhrases = pickHighlightPhrases(source);
+  pdfCurrentSource = source;
   pdfPageNum = parseInt(source.page, 10) || 1;
   document.getElementById("pdfTitle").textContent = source.filename || "Document";
 
@@ -1789,7 +1835,7 @@ async function renderPdfPage() {
   await page.render({ canvasContext: ctx, viewport }).promise;
 
   const hlLayer = document.getElementById("pdfHlLayer");
-  await applyPdfHighlights(page, viewport, hlLayer, pdfHighlightPhrases);
+  await applyPdfHighlights(page, viewport, hlLayer, pdfCurrentSource);
   updatePdfToolbar();
 }
 
@@ -1797,6 +1843,7 @@ document.getElementById("pdfClose").addEventListener("click", () => {
   document.getElementById("pdfModal").classList.remove("open");
   pdfDoc = null;
   pdfFileId = null;
+  pdfCurrentSource = null;
   pdfSources = [];
 });
 document.getElementById("pdfPrev").addEventListener("click", async () => {
@@ -1817,6 +1864,9 @@ document.getElementById("pdfNext").addEventListener("click", async () => {
 });
 
 function sourceCardKey(s) {
+  if (s.highlight_mode === "chars") {
+    return [s.file_id, s.page, "chars", s.char_target_label, s.char_match_count].join("|");
+  }
   return [
     s.file_id, s.page, s.global_paragraph_index, s.paragraph_index,
     s.word_start, s.chunk_kind || s.modality,
@@ -1825,6 +1875,16 @@ function sourceCardKey(s) {
 
 function sourceCardLabel(s) {
   const parts = [];
+  if (s.highlight_mode === "chars" && s.char_match_count != null) {
+    if (s.page) {
+      const page = `p.${s.page}`;
+      parts.push(s.total_pages ? `${page}/${s.total_pages}` : page);
+    }
+    const label = s.char_target_label || "match";
+    parts.push(`${s.char_match_count} × ${label}`);
+    parts.push("all matches highlighted");
+    return parts.join(" · ");
+  }
   if (s.page) {
     const page = `p.${s.page}`;
     parts.push(s.total_pages ? `${page}/${s.total_pages}` : page);
@@ -1883,6 +1943,12 @@ function formatModalityCount(modality, count) {
 }
 
 function sourcesSummarySubtitle(sources) {
+  if (sources.length && sources.every(s => s.highlight_mode === "chars")) {
+    const total = sources.reduce((a, s) => a + (s.char_match_count || 0), 0);
+    const label = sources[0].char_target_label || "match";
+    const plural = total === 1 ? label : label + (label.startsWith("letter") ? "" : "s");
+    return `${total} ${plural} highlighted across ${sources.length} page${sources.length === 1 ? "" : "s"}`;
+  }
   const counts = {};
   for (const s of sources) {
     const m = normalizeModality(s.modality);
@@ -1930,11 +1996,17 @@ function buildSourcesPanel(sources) {
     }
     const meta = document.createElement("div");
     meta.className = "meta";
-    const hl = (s.highlight_phrases || []).slice(0, 2).map(p => escapeHtml(p)).join(" · ");
+    let preview = "";
+    if (s.highlight_mode === "chars" && s.char_match_count != null) {
+      preview = `Every ${escapeHtml(s.char_target_label || "match")} on this page (${s.char_match_count})`;
+    } else {
+      preview = (s.highlight_phrases || []).slice(0, 2).map(p => escapeHtml(p)).join(" · ");
+      if (preview) preview = `"${preview}"`;
+    }
     meta.innerHTML = `<div class="fn">${escapeHtml(s.filename)}</div>
       <div class="pg">${escapeHtml(sourceCardLabel(s))}</div>
-      ${hl ? `<div class="hl-preview">"${hl}"</div>` : ""}
-      <span class="badge">${escapeHtml(formatModality(s.modality))}</span>`;
+      ${preview ? `<div class="hl-preview">${preview}</div>` : ""}
+      <span class="badge">${escapeHtml(s.highlight_mode === "chars" ? "char match" : formatModality(s.modality))}</span>`;
     card.appendChild(meta);
     card.addEventListener("click", () => openPdfSource(s, unique, i));
     grid.appendChild(card);

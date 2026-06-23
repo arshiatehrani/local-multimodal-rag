@@ -286,7 +286,356 @@ def parse_position(query: str) -> dict[str, Any]:
     if re.search(r"\b(?:end|ending)\s+of\s+(?:the\s+)?(?:document|pdf)\b", q):
         hints["word_from_end"] = hints.get("word_from_end", 1)
 
+    _parse_char_count_hints(q, hints)
+
     return hints
+
+
+_COUNT_LEAD = (
+    r"(?:how many|number of|count(?:\s+(?:the|all))?|total(?:\s+number)?\s+of|"
+    r"tell me the number of)"
+)
+
+_PUNCT_CHAR_NAMES: dict[str, str] = {
+    "comma": ",",
+    "commas": ",",
+    "period": ".",
+    "periods": ".",
+    "dot": ".",
+    "dots": ".",
+    "full stop": ".",
+    "full stops": ".",
+    "semicolon": ";",
+    "semicolons": ";",
+    "colon": ":",
+    "colons": ":",
+    "question mark": "?",
+    "question marks": "?",
+    "exclamation mark": "!",
+    "exclamation marks": "!",
+    "apostrophe": "'",
+    "apostrophes": "'",
+    "hyphen": "-",
+    "hyphens": "-",
+    "dash": "-",
+    "dashes": "-",
+    "quotation mark": '"',
+    "quotation marks": '"',
+    "quote": '"',
+    "quotes": '"',
+    "space": " ",
+    "spaces": " ",
+}
+
+
+def _parse_char_count_hints(q: str, hints: dict[str, Any]) -> None:
+    """Detect character/punctuation count questions (commas, letter s, etc.)."""
+    if hints.get("wants_char_count"):
+        return
+
+    # Quoted single character: how many "," / number of 's'
+    m = re.search(rf"\b{_COUNT_LEAD}\s+['\"](.)['\"]", q)
+    if m:
+        ch = m.group(1)
+        hints["wants_char_count"] = True
+        hints["char_target"] = ch
+        hints["char_case_insensitive"] = ch.isalpha()
+        _set_char_count_scope(q, hints)
+        return
+
+    # Named punctuation: how many commas
+    for name in sorted(_PUNCT_CHAR_NAMES.keys(), key=len, reverse=True):
+        if re.search(rf"\b{_COUNT_LEAD}\s+{re.escape(name)}\b", q):
+            hints["wants_char_count"] = True
+            hints["char_target"] = _PUNCT_CHAR_NAMES[name]
+            hints["char_case_insensitive"] = False
+            _set_char_count_scope(q, hints)
+            return
+
+    # "letter s" / "the letter a"
+    m = re.search(rf"\b{_COUNT_LEAD}\s+(?:the\s+)?letter\s+([a-z])\b", q)
+    if m:
+        hints["wants_char_count"] = True
+        hints["char_target"] = m.group(1)
+        hints["char_case_insensitive"] = True
+        _set_char_count_scope(q, hints)
+        return
+
+    # "s letters" / "s letter"
+    m = re.search(rf"\b{_COUNT_LEAD}\s+([a-z])\s+letters?\b", q)
+    if m:
+        hints["wants_char_count"] = True
+        hints["char_target"] = m.group(1)
+        hints["char_case_insensitive"] = True
+        _set_char_count_scope(q, hints)
+        return
+
+    # "s's" / "number of s's"
+    m = re.search(rf"\b{_COUNT_LEAD}\s+([a-z])['']s\b", q)
+    if m:
+        hints["wants_char_count"] = True
+        hints["char_target"] = m.group(1)
+        hints["char_case_insensitive"] = True
+        _set_char_count_scope(q, hints)
+        return
+
+    if re.search(rf"\b{_COUNT_LEAD}\s+characters?\b", q) and "char_target" not in hints:
+        hints["wants_char_count"] = True
+        hints["wants_total_char_count"] = True
+        _set_char_count_scope(q, hints)
+
+
+def _set_char_count_scope(q: str, hints: dict[str, Any]) -> None:
+    if hints.get("count_scope"):
+        return
+    if re.search(r"\b(?:this|the)\s+page\b", q) or (
+        hints.get("page") and "paragraph" not in q
+    ):
+        hints["count_scope"] = "page"
+    elif "paragraph" in q:
+        hints["count_scope"] = "paragraph"
+    elif re.search(r"\b(?:whole|entire|full)\s+(?:document|pdf|file|text)\b", q):
+        hints["count_scope"] = "document"
+    elif re.search(r"\b(?:in\s+)?(?:the\s+)?(?:document|pdf|file|text)\b", q):
+        hints["count_scope"] = "document"
+    else:
+        hints["count_scope"] = "document"
+
+
+def char_target_label(char: str) -> str:
+    if not char:
+        return "character"
+    if char == ",":
+        return "comma"
+    if char == ".":
+        return "period"
+    if char == " ":
+        return "space"
+    for name, ch in _PUNCT_CHAR_NAMES.items():
+        if ch == char and not name.endswith("s"):
+            return name
+    if len(char) == 1 and char.isalpha():
+        return f'letter "{char.upper()}"'
+    return f'"{char}"'
+
+
+def count_character_matches(text: str, char: str, case_insensitive: bool = False) -> int:
+    if not text or not char:
+        return 0
+    if len(char) == 1 and char.isalpha() and case_insensitive:
+        target = char.lower()
+        return sum(1 for c in text if c.isalpha() and c.lower() == target)
+    return text.count(char)
+
+
+def _payload_matches_scope(pay: dict, hints: dict) -> bool:
+    if hints.get("page") and pay.get("page") != hints["page"]:
+        return False
+    if hints.get("page_from_end") and pay.get("page_from_end") != hints["page_from_end"]:
+        return False
+    if hints.get("region") and pay.get("region") != hints["region"]:
+        return False
+    if hints.get("global_paragraph_index") is not None:
+        if pay.get("global_paragraph_index") != hints["global_paragraph_index"]:
+            return False
+    if hints.get("paragraph_index") is not None:
+        if pay.get("paragraph_index") != hints["paragraph_index"]:
+            return False
+    if hints.get("global_paragraph_from_end"):
+        gdc = pay.get("paragraph_count_doc")
+        gpi = pay.get("global_paragraph_index")
+        if gdc is None or gpi is None:
+            return False
+        if gpi != int(gdc) - hints["global_paragraph_from_end"]:
+            return False
+    return True
+
+
+def _dedupe_text_chunks(payloads: list[dict], scope: str) -> list[dict]:
+    """Pick one canonical text blob per page or paragraph (avoid window overlap)."""
+    if scope == "paragraph":
+        seen: set = set()
+        out = []
+        for pay in sorted(
+            payloads,
+            key=lambda p: (
+                p.get("file_id", ""),
+                p.get("global_paragraph_index", p.get("paragraph_index", 0)),
+            ),
+        ):
+            key = (
+                pay.get("file_id"),
+                pay.get("global_paragraph_index"),
+                pay.get("paragraph_index"),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            if pay.get("chunk_kind") == "window":
+                continue
+            out.append(pay)
+        return out
+
+    # page / document — prefer page_full, else longest paragraph per page
+    by_page: dict[tuple, dict] = {}
+    for pay in payloads:
+        if pay.get("modality") != "text":
+            continue
+        key = (pay.get("file_id"), pay.get("page"))
+        existing = by_page.get(key)
+        if pay.get("chunk_kind") == "page_full":
+            by_page[key] = pay
+            continue
+        if existing and existing.get("chunk_kind") == "page_full":
+            continue
+        if not existing or len(pay.get("text", "")) > len(existing.get("text", "")):
+            by_page[key] = pay
+    return sorted(
+        by_page.values(),
+        key=lambda p: (p.get("file_id", ""), int(p.get("page") or 0)),
+    )
+
+
+def filter_chunks_for_char_count(payloads: list[dict], hints: dict) -> list[dict]:
+    scope = hints.get("count_scope", "document")
+    text_payloads = [
+        p for p in payloads
+        if p.get("modality") == "text" and (p.get("text") or "").strip()
+    ]
+    filtered = [p for p in text_payloads if _payload_matches_scope(p, hints)]
+    if scope == "paragraph":
+        return _dedupe_text_chunks(filtered, "paragraph")
+    if scope == "page":
+        return _dedupe_text_chunks(filtered, "page")
+    return _dedupe_text_chunks(filtered, "document")
+
+
+def build_char_count_sources(chunks: list[dict], hints: dict) -> tuple[str, list[dict]]:
+    """Return (answer markdown, source dicts with char highlight metadata)."""
+    char = hints.get("char_target", "")
+    case_insensitive = bool(hints.get("char_case_insensitive"))
+    label = char_target_label(char)
+    scope = hints.get("count_scope", "document")
+
+    total = 0
+    sources: list[dict] = []
+    for pay in chunks:
+        text = pay.get("text", "") or ""
+        n = count_character_matches(text, char, case_insensitive)
+        if n <= 0:
+            continue
+        total += n
+        plural = label + ("s" if n != 1 and not label.startswith("letter") else "")
+        if label.startswith("letter"):
+            plural = label + ("" if n == 1 else " (matches)")
+        sources.append({
+            "file_id": pay.get("file_id", ""),
+            "filename": pay.get("filename", ""),
+            "page": pay.get("page", ""),
+            "total_pages": pay.get("total_pages"),
+            "modality": "text",
+            "chunk_kind": pay.get("chunk_kind", ""),
+            "text": text[:240] + ("…" if len(text) > 240 else ""),
+            "highlight_mode": "chars",
+            "highlight_chars": [char],
+            "char_case_insensitive": case_insensitive,
+            "char_match_count": n,
+            "char_target_label": label,
+            "highlight_phrases": [],
+        })
+
+    scope_phrase = {
+        "document": "the document text",
+        "page": f"page {hints.get('page', chunks[0].get('page') if chunks else '?')}",
+        "paragraph": "the selected paragraph",
+    }.get(scope, "the text")
+
+    if total == 0:
+        answer = (
+            f"There are **0** {label}s in {scope_phrase} "
+            f"(precise count from ingested text)."
+        )
+    elif total == 1:
+        answer = (
+            f"There is **1** {label} in {scope_phrase} "
+            f"(precise count from ingested text)."
+        )
+    else:
+        answer = (
+            f"There are **{total}** {label}s in {scope_phrase} "
+            f"(precise count from ingested text)."
+        )
+
+    if len(sources) > 1:
+        per_page = ", ".join(
+            f"p.{s['page']}: {s['char_match_count']}" for s in sources[:12]
+        )
+        if len(sources) > 12:
+            per_page += ", …"
+        answer += f" Breakdown by page — {per_page}."
+
+    answer += " Open each source card to see every match highlighted in the PDF."
+
+    return answer, sources
+
+
+def build_total_char_count_response(space_id: str, hints: dict) -> tuple[str, list[dict]]:
+    """Deterministic total character count from stored ingest statistics."""
+    from document_stats import format_stats_context_block
+    import spaces as _spaces
+
+    try:
+        data = _spaces.get_space(space_id)
+        files = [f for f in data.get("files", []) if f.get("text_stats")]
+    except Exception:
+        files = []
+
+    scope = hints.get("count_scope", "document")
+    if not files:
+        return (
+            "No document statistics are available yet. Re-upload PDFs to compute precise counts.",
+            [],
+        )
+
+    if scope == "document" and len(files) == 1:
+        stats = files[0]["text_stats"]
+        answer = (
+            f"The document contains **{stats['char_count']}** characters "
+            f"({stats['char_count_no_space']} excluding whitespace, "
+            f"{stats['whitespace_count']} whitespace) and "
+            f"**{stats['word_count']}** words (precise counts at ingest)."
+        )
+    elif scope == "document":
+        chars = sum(int(f["text_stats"].get("char_count", 0)) for f in files)
+        no_ws = sum(int(f["text_stats"].get("char_count_no_space", 0)) for f in files)
+        words = sum(int(f["text_stats"].get("word_count", 0)) for f in files)
+        answer = (
+            f"This space contains **{chars}** characters "
+            f"({no_ws} excluding whitespace) and **{words}** words "
+            f"across {len(files)} file(s) (precise counts at ingest)."
+        )
+    else:
+        answer = (
+            "Character totals for a specific page or paragraph are best asked with "
+            "'how many characters on page N' after re-uploading with page statistics."
+        )
+
+    sources = []
+    for f in files:
+        stats = f["text_stats"]
+        sources.append({
+            "file_id": f.get("file_id", ""),
+            "filename": f.get("original_name", ""),
+            "page": 1,
+            "modality": "text",
+            "chunk_kind": "document_stats",
+            "text": format_stats_context_block(f.get("original_name", ""), stats),
+            "highlight_mode": "",
+            "highlight_phrases": [f"{stats.get('char_count', 0)} characters"],
+            "char_match_count": stats.get("char_count"),
+            "char_target_label": "character total",
+        })
+    return answer, sources
 
 
 def format_position_header(meta: dict) -> str:
@@ -494,11 +843,37 @@ def boost_hits_by_position(hits: list, hints: dict) -> list:
     return sorted(hits, key=score, reverse=True)
 
 
-def word_count_answer(hits: list, hints: dict) -> str | None:
-    """If the user asked for a word count, return a precise answer from metadata."""
-    if not hints.get("wants_word_count") or not hits:
+def word_count_answer(hits: list, hints: dict, space_id: str | None = None) -> str | None:
+    """If the user asked for a word count, return a precise answer from ingest metadata."""
+    if not hints.get("wants_word_count"):
         return None
     scope = hints.get("count_scope", "document")
+
+    if space_id and scope == "document":
+        try:
+            import spaces as _spaces
+            data = _spaces.get_space(space_id)
+            totals = [f.get("text_stats") for f in data.get("files", []) if f.get("text_stats")]
+            if len(totals) == 1:
+                s = totals[0]
+                return (
+                    f"The document contains **{s['word_count']}** words and "
+                    f"**{s['char_count']}** characters "
+                    f"({s['char_count_no_space']} excluding whitespace) "
+                    f"(precise counts at ingest)."
+                )
+            if totals:
+                words = sum(int(t.get("word_count", 0)) for t in totals)
+                chars = sum(int(t.get("char_count", 0)) for t in totals)
+                return (
+                    f"This space contains **{words}** words and **{chars}** characters "
+                    f"across {len(totals)} text file(s) (precise counts at ingest)."
+                )
+        except Exception:
+            pass
+
+    if not hits:
+        return None
 
     pay = hits[0].payload
     if scope == "paragraph":
@@ -523,7 +898,16 @@ def word_count_answer(hits: list, hints: dict) -> str | None:
                 break
 
     if scope == "document" and pay.get("doc_word_count"):
-        return f"The document contains **{pay['doc_word_count']}** words (precise count at ingest)."
+        extra = ""
+        if pay.get("doc_char_count"):
+            extra = (
+                f" and **{pay['doc_char_count']}** characters "
+                f"({pay.get('doc_char_count_no_space', '?')} excluding whitespace)"
+            )
+        return (
+            f"The document contains **{pay['doc_word_count']}** words{extra} "
+            f"(precise count at ingest)."
+        )
     if scope == "page" and pay.get("page_word_count"):
         return (
             f"Page {pay.get('page', '?')} contains **{pay['page_word_count']}** words "

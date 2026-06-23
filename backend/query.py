@@ -7,6 +7,7 @@ from threading import Thread
 import numpy as np
 
 import spaces
+from document_stats import format_chunk_stats_line, format_stats_context_block
 from model_manager import manager
 from positioning import (
     format_position_header,
@@ -14,8 +15,10 @@ from positioning import (
     boost_hits_by_position,
     word_count_answer,
     tokenize_words,
+    build_char_count_sources,
+    build_total_char_count_response,
 )
-from qdrant_store import hybrid_search, count_points
+from qdrant_store import hybrid_search, count_points, get_text_chunks_for_count
 from rag_context import (
     MAX_CONTEXT_TOKENS,
     estimate_tokens,
@@ -358,6 +361,11 @@ def _payload_to_source(pay: dict, highlight_phrases: list[str] | None = None) ->
         "thumbnail": pay.get("thumbnail_b64", ""),
         "text": pay.get("text", ""),
         "highlight_phrases": highlight_phrases or [],
+        "highlight_mode": pay.get("highlight_mode", ""),
+        "highlight_chars": pay.get("highlight_chars") or [],
+        "char_case_insensitive": bool(pay.get("char_case_insensitive")),
+        "char_match_count": pay.get("char_match_count"),
+        "char_target_label": pay.get("char_target_label", ""),
     }
 
 
@@ -403,6 +411,8 @@ def _should_skip_rerank(n_points: int, query: str, pos_hints: dict) -> bool:
         return False
     if pos_hints.get("wants_word_count"):
         return True
+    if pos_hints.get("wants_char_count"):
+        return True
     if (
         pos_hints.get("paragraph_index") is not None
         or pos_hints.get("global_paragraph_index") is not None
@@ -437,13 +447,33 @@ def _format_source_header(pay: dict) -> str:
     return format_position_header(pay)
 
 
+def _space_stats_context(space_id: str) -> str:
+    """Authoritative per-file statistics for the generator (from space.json at ingest)."""
+    try:
+        data = spaces.get_space(space_id)
+    except Exception:
+        return ""
+    lines = []
+    for f in data.get("files", []):
+        stats = f.get("text_stats")
+        if not stats:
+            continue
+        lines.append(format_stats_context_block(f.get("original_name", "file"), stats))
+    if not lines:
+        return ""
+    return (
+        "[DOCUMENT STATISTICS — precise counts computed at ingest; "
+        "these numbers are authoritative]\n"
+        + "\n".join(lines)
+    )
+
+
 def _position_facts_for_chunk(pay: dict) -> str:
-    """Compact positional facts injected into generator context."""
+    """Compact positional + statistical facts injected into generator context."""
     lines = [format_position_header(pay)]
-    if pay.get("doc_word_count"):
-        lines.append(f"Document total: {pay['doc_word_count']} words")
-    if pay.get("page_word_count"):
-        lines.append(f"Page total: {pay['page_word_count']} words")
+    stats_line = format_chunk_stats_line(pay)
+    if stats_line:
+        lines.append(stats_line)
     if pay.get("first_word") and pay.get("last_word"):
         lines.append(f"Chunk spans '{pay['first_word']}' … '{pay['last_word']}'")
     if pay.get("leading_words"):
@@ -634,6 +664,26 @@ async def run_query(user_query: str, space_id: str, chat_id: str):
 
     pos_hints = parse_position(user_query)
     n_points = count_points(space_id)
+
+    if pos_hints.get("wants_char_count"):
+        if pos_hints.get("wants_total_char_count"):
+            yield _status("search", "Searching content…")
+            answer, char_sources = build_total_char_count_response(space_id, pos_hints)
+        elif pos_hints.get("char_target"):
+            yield _status("search", "Searching content…")
+            chunks = get_text_chunks_for_count(space_id, pos_hints)
+            answer, char_sources = build_char_count_sources(chunks, pos_hints)
+        else:
+            answer, char_sources = "Could not determine which character to count.", []
+        yield {"type": "context", **context_status(estimate_tokens(user_query))}
+        yield _status("prepare", "Preparing response…")
+        yield _status("generate", "Generating response…")
+        async for part in _yield_text_stream(answer):
+            yield {"type": "token", "text": part}
+        yield {"type": "sources", "sources": char_sources}
+        yield {"type": "done"}
+        return
+
     overview = _is_overview_query(user_query)
     top_k_retrieve, top_k_final = _top_k_for_space(n_points, overview)
 
@@ -685,10 +735,13 @@ async def run_query(user_query: str, space_id: str, chat_id: str):
     yield {"type": "context", **context_status(used, summarized=summarized)}
 
     context_parts = []
-    count_fact = word_count_answer(reranked_hits, pos_hints)
+    count_fact = word_count_answer(reranked_hits, pos_hints, space_id=space_id)
     exact_word = _extract_word_at_hint(reranked_hits[0].payload, pos_hints) if reranked_hits else None
 
     prefix_lines = []
+    stats_context = _space_stats_context(space_id)
+    if stats_context:
+        prefix_lines.append(stats_context)
     if count_fact:
         prefix_lines.append(f"[PRECISE COUNT] {count_fact}")
     if exact_word:
@@ -712,12 +765,13 @@ async def run_query(user_query: str, space_id: str, chat_id: str):
         system_prompt = (
             "You are a precise research assistant. "
             "Answer ONLY based on the provided context and conversation history. "
-            "Each source includes precise positional metadata: "
+            "Each source includes precise positional metadata and DOCUMENT STATISTICS "
+            "(word counts, character counts, punctuation counts — all computed at ingest). "
             "doc_words (absolute 1-indexed word range in the full document), "
             "page_words (1-indexed within the page), "
             "para_words (1-indexed within the paragraph), "
             "region (header/body/footer), and exact word counts. "
-            "Use PRECISE COUNT and EXACT WORD AT POSITION facts when present. "
+            "Always prefer DOCUMENT STATISTICS and PRECISE COUNT lines over guessing. "
             "If the answer is not in the context, say so clearly. "
             "Never invent dates, deadlines, word limits, or requirements — copy them exactly from the context. "
             "Reply in the same language the user writes in when appropriate. "
