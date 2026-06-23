@@ -38,14 +38,6 @@ _SINGLE_MODEL_VRAM_WARN_GB = float(os.environ.get("SINGLE_MODEL_VRAM_WARN_GB", "
 _LOAD_HEADROOM_GB = float(os.environ.get("LOAD_HEADROOM_GB", "1.8"))
 
 
-# Default expected load duration (seconds) until we calibrate from a prior run.
-_LOAD_EST_SEC = {
-    "embedder": 35,
-    "reranker": 40,
-    "generator": 55,
-}
-
-
 def _device() -> str:
     import torch
     return "cuda" if torch.cuda.is_available() else "cpu"
@@ -226,8 +218,6 @@ def _load_generator_cls():
 class _WeightLoadProgress:
     """Patch tqdm during ``from_pretrained`` so the UI tracks real weight shards."""
 
-    _FAKE_CAP = 12  # time-based filler never exceeds this before weights start
-
     def __init__(self, on_progress):
         self._on_progress = on_progress
         self._orig_tqdm = None
@@ -296,30 +286,9 @@ class ModelManager:
         self._loading["total"] = total
         self._set_loading_pct(int(100 * current / total))
 
-    def _estimate_load_seconds(self, name: str) -> float:
-        if name in self._load_durations:
-            return self._load_durations[name]
-        if self._load_durations:
-            return sum(self._load_durations.values()) / len(self._load_durations)
-        return _LOAD_EST_SEC.get(name, 45)
-
     async def _progress_ticker(self, name: str, done: asyncio.Event) -> None:
-        est = self._estimate_load_seconds(name)
-        t0 = time.time()
+        """Keep pct at 0 until real weight-shard progress arrives; jump to 100 when done."""
         while not done.is_set():
-            if self._loading and self._loading.get("total", 0) > 0:
-                # Real weight-shard progress drives the bar once loading starts.
-                try:
-                    await asyncio.wait_for(done.wait(), timeout=0.35)
-                except asyncio.TimeoutError:
-                    pass
-                continue
-            elapsed = time.time() - t0
-            pct = min(
-                _WeightLoadProgress._FAKE_CAP,
-                int(100 * (1.0 - pow(2.718281828, -elapsed / max(est * 0.85, 1)))),
-            )
-            self._set_loading_pct(pct)
             try:
                 await asyncio.wait_for(done.wait(), timeout=0.35)
             except asyncio.TimeoutError:

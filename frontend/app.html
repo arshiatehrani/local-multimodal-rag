@@ -156,6 +156,30 @@
   .load-status.idle .load-bars,
   .load-status.err .load-bars { display: none; }
 
+  .conn-badge {
+    position: fixed; top: 12px; right: 14px; z-index: 200;
+    display: flex; align-items: center; gap: 7px;
+    padding: 6px 12px; border-radius: 999px;
+    font-size: 11px; font-weight: 500; line-height: 1;
+    background: var(--surface); border: 1px solid var(--border);
+    box-shadow: var(--bubble-shadow); color: var(--text);
+    pointer-events: none; user-select: none;
+  }
+  .conn-badge .conn-dot {
+    width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+    background: var(--text-dim);
+  }
+  .conn-badge.online .conn-dot { background: var(--accent); }
+  .conn-badge.offline .conn-dot { background: var(--danger); }
+  .conn-badge.checking .conn-dot {
+    background: var(--text-dim);
+    animation: conn-pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes conn-pulse {
+    0%, 100% { opacity: 0.35; transform: scale(0.92); }
+    50% { opacity: 1; transform: scale(1); }
+  }
+
   /* Main */
   .main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   #workspace { flex: 1; display: flex; flex-direction: column; min-height: 0; }
@@ -465,6 +489,10 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 </head>
 <body>
+  <div class="conn-badge checking" id="connBadge" aria-live="polite">
+    <span class="conn-dot" aria-hidden="true"></span>
+    <span id="connText">Checking backend…</span>
+  </div>
   <!-- SPACES SIDEBAR -->
   <div class="spaces-rail-wrap" id="spacesRailWrap">
     <aside class="sidebar" id="spacesSidebar">
@@ -919,6 +947,7 @@ function isSupported(name) {
 /* ---------- Health ---------- */
 let modelsReady = false;
 let healthPollMs = 400;
+let connKnown = false;
 
 const MODEL_LABELS = { embedder: "Embedder", reranker: "Reranker", generator: "Generator" };
 
@@ -954,6 +983,24 @@ function setLoadBars(overallPct, modelName, modelPct, count, total, weightCurren
   }
 }
 
+function updateConnBadge(mode, detail) {
+  const badge = document.getElementById("connBadge");
+  const text = document.getElementById("connText");
+  if (!badge || !text) return;
+  badge.classList.remove("online", "offline", "checking");
+  badge.classList.add(mode);
+  if (mode === "offline") {
+    text.textContent = "Backend offline";
+    badge.title = "Cannot reach the API — start the backend or check run.bat";
+  } else if (mode === "checking") {
+    text.textContent = "Checking backend…";
+    badge.title = "";
+  } else {
+    text.textContent = detail ? `Backend online · ${detail}` : "Backend online";
+    badge.title = detail || "API is reachable";
+  }
+}
+
 function updateLoadStatusUI(state, s) {
   const wrap = document.getElementById("loadStatus");
   const txt = document.getElementById("statusText");
@@ -967,22 +1014,26 @@ function updateLoadStatusUI(state, s) {
   if (state === "ready") {
     txt.textContent = "Models ready";
     pctBadge.textContent = "";
+    updateConnBadge("online", "Models ready");
     setLoadBars(100, null, 0, s?.total || 3, s?.total || 3);
     return;
   }
   if (state === "offline") {
     txt.textContent = "Backend offline";
     pctBadge.textContent = "";
+    updateConnBadge("offline");
     return;
   }
   if (state === "err") {
     const nErr = s?.errors ? Object.keys(s.errors).length : 0;
     txt.textContent = "Load error — see terminal";
     pctBadge.textContent = nErr ? String(nErr) : "";
+    updateConnBadge("online", "Load error");
     return;
   }
   if (state === "loading") {
     txt.textContent = "Loading models";
+    updateConnBadge("online", "Loading models");
     const overall = s.overall_pct ?? 0;
     const modelName = s.loading?.name || (s.count === 0 ? "embedder" : null);
     const modelPct = s.loading?.pct ?? (s.count === 0 ? 0 : 100);
@@ -991,12 +1042,15 @@ function updateLoadStatusUI(state, s) {
   }
   txt.textContent = "Backend online";
   pctBadge.textContent = "";
+  updateConnBadge("online");
 }
 
 async function checkHealth() {
+  if (!connKnown) updateConnBadge("checking");
   try {
     const r = await fetch(API + "/health");
     if (!r.ok) throw new Error();
+    connKnown = true;
     if (!modelsReady) {
       try {
         const s = await (await fetch(API + "/models/status")).json();
@@ -1013,6 +1067,7 @@ async function checkHealth() {
     }
   } catch {
     modelsReady = false;
+    connKnown = true;
     updateLoadStatusUI("offline");
     healthPollMs = 2000;
   }
