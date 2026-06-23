@@ -5,7 +5,7 @@ A "Space" is a self-contained project. On disk:
     spaces/<folder_name>/              # human-readable, e.g. "test" or "my-project__a1b2c3d4"
         space.json                      # metadata + file list (id is stable UUID)
         media/<original-filename>       # uploaded files (deduped if same name)
-        chats/<chat_id>.json            # one conversation each
+        chats/<slug>__<short_id>.json   # e.g. assignment-questions__c0846060.json
 
 Vectors live in Qdrant (see qdrant_store.py); this module only owns the
 files + JSON metadata. Override the root with the SPACES_DIR env var.
@@ -50,6 +50,101 @@ def _slug(name: str, max_len: int = 48) -> str:
     s = name.strip().lower()
     s = re.sub(r"[^a-z0-9]+", "-", s).strip("-")
     return (s[:max_len] or "space")
+
+
+def _chat_slug(title: str, max_len: int = 48) -> str:
+    s = title.strip().lower()
+    s = re.sub(r"[^a-z0-9]+", "-", s).strip("-")
+    return (s[:max_len] or "chat")
+
+
+def _looks_like_uuid(value: str) -> bool:
+    v = (value or "").strip().lower().removesuffix(".json")
+    return bool(re.fullmatch(r"[a-f0-9]{32}", v))
+
+
+def _title_from_text(text: str, max_len: int = 48) -> str:
+    t = re.sub(r"\s+", " ", (text or "").strip())
+    if not t:
+        return "New chat"
+    if len(t) <= max_len:
+        return t
+    return t[: max_len - 3].rstrip() + "..."
+
+
+def _resolve_chat_title(data: dict, filename: str) -> str:
+    """Pick a human-readable title; repair legacy uuid-only titles."""
+    title = (data.get("title") or "").strip()
+    chat_id = data.get("id", "")
+
+    if title and not _looks_like_uuid(title) and title.lower() != "chat":
+        return title
+
+    stem = filename[:-5] if filename.endswith(".json") else filename
+    if "__" in stem:
+        slug_part = stem.rsplit("__", 1)[0]
+        if slug_part and slug_part != "chat":
+            return slug_part.replace("-", " ")
+
+    for msg in data.get("messages", []):
+        if msg.get("role") == "user":
+            return _title_from_text(msg.get("content", ""))
+
+    if _looks_like_uuid(stem):
+        return "New chat"
+    return _title_from_text(stem.replace("-", " ")) or "New chat"
+
+
+def _unique_chat_filename(space_id: str, title: str, chat_id: str) -> str:
+    """Readable chat filename; stable id suffix avoids collisions."""
+    base = _chat_slug(title)
+    candidate = f"{base}__{chat_id[:8]}.json"
+    path = os.path.join(_chats_dir(space_id), candidate)
+    if not os.path.exists(path):
+        return candidate
+    return f"{base}__{chat_id[:12]}.json"
+
+
+def _find_chat_path(space_id: str, chat_id: str) -> str | None:
+    """Locate a chat JSON file by its stable id (supports legacy uuid.json names)."""
+    cdir = _chats_dir(space_id)
+    if not os.path.isdir(cdir):
+        return None
+    legacy = os.path.join(cdir, f"{chat_id}.json")
+    if os.path.isfile(legacy):
+        return legacy
+    for fn in os.listdir(cdir):
+        if not fn.endswith(".json"):
+            continue
+        path = os.path.join(cdir, fn)
+        try:
+            data = _read_json(path)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if data.get("id") == chat_id:
+            return path
+    return None
+
+
+def _sync_chat_file(space_id: str, data: dict, path: str) -> str:
+    """Ensure title is readable and on-disk name matches the title slug."""
+    chat_id = data.get("id") or ""
+    title = _resolve_chat_title(data, os.path.basename(path))
+    if data.get("title") != title:
+        data["title"] = title
+
+    desired = _unique_chat_filename(space_id, title, chat_id)
+    desired_path = os.path.join(_chats_dir(space_id), desired)
+    if os.path.normpath(path) != os.path.normpath(desired_path):
+        if os.path.exists(desired_path) and os.path.normpath(desired_path) != os.path.normpath(path):
+            desired = f"{_chat_slug(title)}__{chat_id[:12]}.json"
+            desired_path = os.path.join(_chats_dir(space_id), desired)
+        _write_json(path, data)
+        os.replace(path, desired_path)
+        return desired_path
+
+    _write_json(path, data)
+    return path
 
 
 def _find_space_dir(space_id: str) -> str | None:
@@ -287,24 +382,29 @@ def get_file_path(space_id: str, file_id: str) -> str:
 # Chats within a space
 # --------------------------------------------------------------------------- #
 def _chat_path(space_id: str, chat_id: str) -> str:
-    return os.path.join(_chats_dir(space_id), f"{chat_id}.json")
+    path = _find_chat_path(space_id, chat_id)
+    if path is None:
+        raise KeyError(f"Chat '{chat_id}' not found in space '{space_id}'")
+    return path
 
 
 def create_chat(space_id: str, title: str = "") -> dict:
     if not os.path.isfile(_space_json_path(space_id)):
         raise KeyError(f"Space '{space_id}' not found")
     chat_id = _new_id()
+    clean_title = _title_from_text(title) if (title or "").strip() else "New chat"
     with _lock:
         os.makedirs(_chats_dir(space_id), exist_ok=True)
         data = {
             "id": chat_id,
             "space_id": space_id,
-            "title": (title or "").strip() or "New chat",
+            "title": clean_title,
             "created_at": _now(),
             "updated_at": _now(),
             "messages": [],
         }
-        _write_json(_chat_path(space_id, chat_id), data)
+        fn = _unique_chat_filename(space_id, clean_title, chat_id)
+        _write_json(os.path.join(_chats_dir(space_id), fn), data)
     return data
 
 
@@ -316,13 +416,17 @@ def list_chats(space_id: str) -> list:
     for fn in os.listdir(cdir):
         if not fn.endswith(".json"):
             continue
+        path = os.path.join(cdir, fn)
         try:
-            data = _read_json(os.path.join(cdir, fn))
+            data = _read_json(path)
         except (OSError, json.JSONDecodeError):
             continue
+        with _lock:
+            path = _sync_chat_file(space_id, data, path)
+            data = _read_json(path)
         out.append({
             "id": data.get("id"),
-            "title": data.get("title", "Chat"),
+            "title": data.get("title", "New chat"),
             "created_at": data.get("created_at", ""),
             "updated_at": data.get("updated_at", ""),
         })
@@ -332,8 +436,9 @@ def list_chats(space_id: str) -> list:
 
 def get_chat(space_id: str, chat_id: str) -> dict:
     path = _chat_path(space_id, chat_id)
-    if not os.path.isfile(path):
-        raise KeyError(f"Chat '{chat_id}' not found in space '{space_id}'")
+    data = _read_json(path)
+    with _lock:
+        path = _sync_chat_file(space_id, data, path)
     return _read_json(path)
 
 
@@ -346,26 +451,38 @@ def delete_chat(space_id: str, chat_id: str) -> None:
 
 
 def update_chat(space_id: str, chat_id: str, title: str) -> dict:
-    title = (title or "").strip()
+    title = _title_from_text(title)
     if not title:
         raise ValueError("Chat title cannot be empty")
     with _lock:
-        data = get_chat(space_id, chat_id)
+        path = _chat_path(space_id, chat_id)
+        data = _read_json(path)
         data["title"] = title
         data["updated_at"] = _now()
-        _write_json(_chat_path(space_id, chat_id), data)
-    return data
+        path = _sync_chat_file(space_id, data, path)
+    return _read_json(path)
 
 
 def append_message(space_id: str, chat_id: str, role: str, content: str,
                    sources: list | None = None) -> dict:
-    """Append a message. Does NOT auto-rename chats — title is set explicitly."""
+    """Append a message; auto-title from first user question when title is generic."""
     with _lock:
-        data = get_chat(space_id, chat_id)
+        path = _chat_path(space_id, chat_id)
+        data = _read_json(path)
         msg = {"role": role, "content": content}
         if sources:
             msg["sources"] = sources
         data["messages"].append(msg)
         data["updated_at"] = _now()
-        _write_json(_chat_path(space_id, chat_id), data)
+
+        user_msgs = [m for m in data["messages"] if m.get("role") == "user"]
+        current_title = (data.get("title") or "").strip()
+        if (
+            role == "user"
+            and len(user_msgs) == 1
+            and (not current_title or current_title == "New chat" or _looks_like_uuid(current_title))
+        ):
+            data["title"] = _title_from_text(content)
+
+        path = _sync_chat_file(space_id, data, path)
     return msg

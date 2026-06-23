@@ -24,6 +24,8 @@
     --radius: 12px;
     --pdf-overlay: rgba(0, 0, 0, 0.85);
     --input-bg: #2f2f2f;
+    --spaces-rail-w: 240px;
+    --chats-rail-w: 220px;
   }
   [data-theme="light"] {
     --bg: #ffffff;
@@ -53,10 +55,26 @@
   }
 
   /* Spaces sidebar */
-  .sidebar {
-    width: 240px; background: var(--surface); border-right: 1px solid var(--border);
-    display: flex; flex-direction: column; padding: 18px 12px; flex-shrink: 0;
+  .spaces-rail-wrap {
+    display: flex; flex-shrink: 0; height: 100%; min-height: 0;
   }
+  .sidebar {
+    width: var(--spaces-rail-w); background: var(--surface);
+    display: flex; flex-direction: column; padding: 18px 12px; flex-shrink: 0; min-height: 0;
+  }
+  .rail-resizer {
+    width: 6px; flex-shrink: 0; cursor: col-resize; position: relative; z-index: 5;
+    background: transparent; transition: background .15s ease;
+  }
+  .rail-resizer::after {
+    content: ""; position: absolute; top: 0; bottom: 0; left: 2px; width: 2px;
+    background: var(--border); border-radius: 1px; transition: background .15s ease, width .15s ease;
+  }
+  .rail-resizer:hover::after, .rail-resizer.dragging::after {
+    background: var(--accent); width: 3px; left: 1px;
+  }
+  body.rail-resizing { cursor: col-resize !important; user-select: none; }
+  body.rail-resizing * { cursor: col-resize !important; }
   .logo { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 16px; padding: 6px 8px 18px; }
   .logo .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 12px var(--accent); }
   .rail-head { display: flex; align-items: center; justify-content: space-between; padding: 4px 8px 10px; }
@@ -162,7 +180,13 @@
   /* Chat view */
   #view-chat { flex: 1; min-height: 0; }
   #view-chat.active { flex-direction: row !important; }
-  .chats-rail { width: 220px; border-right: 1px solid var(--border); display: flex; flex-direction: column; padding: 14px 10px; flex-shrink: 0; min-height: 0; }
+  .chats-rail-wrap {
+    display: flex; flex-shrink: 0; min-height: 0; height: 100%;
+  }
+  .chats-rail {
+    width: var(--chats-rail-w); display: flex; flex-direction: column;
+    padding: 14px 10px; flex-shrink: 0; min-height: 0;
+  }
   .chat-main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
   .chat-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 26px 28px; }
   .empty-state { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--text-dim); gap: 8px; }
@@ -172,6 +196,7 @@
   .bubble { padding: 12px 16px; border-radius: 14px; line-height: 1.55; white-space: pre-wrap; word-wrap: break-word; max-width: 80%; }
   .msg.user .bubble { background: var(--user-bubble); color: var(--user-text); border-bottom-right-radius: 4px; font-weight: 500; }
   .msg.assistant .bubble { background: var(--surface); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+  .msg.assistant .bubble.status-hint { color: var(--text-dim); font-style: italic; }
   .msg.assistant .bubble strong { font-weight: 700; }
   .msg.assistant .bubble ul { margin: 8px 0 8px 20px; }
   .msg.assistant .bubble li { margin: 4px 0; }
@@ -239,26 +264,60 @@
   .pdf-page-wrap canvas { display: block; box-shadow: 0 4px 24px rgba(0,0,0,.5); }
   .pdf-highlight-layer { position: absolute; inset: 0; pointer-events: none; }
   .pdf-highlight-layer .hl { position: absolute; background: rgba(255, 230, 0, .45); border-radius: 2px; }
+
+  /* Picker modals */
+  .picker-modal {
+    display: none; position: fixed; inset: 0; background: var(--pdf-overlay);
+    z-index: 1100; align-items: center; justify-content: center; padding: 20px;
+  }
+  .picker-modal.open { display: flex; }
+  .picker-box {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+    padding: 22px 24px; width: min(440px, 100%); box-shadow: 0 16px 48px rgba(0,0,0,.35);
+  }
+  .picker-box h3 { font-size: 16px; margin-bottom: 6px; }
+  .picker-box .desc { color: var(--text-dim); font-size: 13px; margin-bottom: 16px; line-height: 1.45; }
+  .picker-option {
+    border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px;
+    background: var(--surface-2);
+  }
+  .picker-option label { display: flex; align-items: center; gap: 8px; font-weight: 500; cursor: pointer; margin-bottom: 8px; }
+  .picker-option input[type=text], .picker-option select {
+    width: 100%; background: var(--input-bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 9px 11px; font-family: inherit; font-size: 13px;
+  }
+  .picker-option input[type=text]:focus, .picker-option select:focus { outline: none; border-color: var(--accent); }
+  .picker-option.disabled { opacity: 0.45; pointer-events: none; }
+  .picker-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
+  .welcome-upload {
+    margin-top: 8px; padding: 20px 28px; border: 2px dashed var(--border); border-radius: 12px;
+    text-align: center; cursor: pointer; color: var(--text-dim); max-width: 420px; transition: border-color .15s;
+  }
+  .welcome-upload:hover, .welcome-upload.drag { border-color: var(--accent); color: var(--text); }
+  .welcome-upload strong { color: var(--accent); }
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 </head>
 <body>
   <!-- SPACES SIDEBAR -->
-  <aside class="sidebar">
-    <div class="logo"><span class="dot"></span> Multimodal RAG</div>
-    <div class="rail-head">
-      <span class="title">Spaces</span>
-      <button class="icon-btn" id="newSpaceBtn" title="New space">+</button>
-    </div>
-    <div class="list" id="spaceList"></div>
-    <div class="sidebar-footer">
-      <div class="theme-row">
-        <span>Theme</span>
-        <button type="button" class="theme-toggle" id="themeToggle" title="Toggle light/dark mode">Light mode</button>
+  <div class="spaces-rail-wrap" id="spacesRailWrap">
+    <aside class="sidebar" id="spacesSidebar">
+      <div class="logo"><span class="dot"></span> Multimodal RAG</div>
+      <div class="rail-head">
+        <span class="title">Spaces</span>
+        <button class="icon-btn" id="newSpaceBtn" title="New space">+</button>
       </div>
-      <div class="status-pill" id="statusPill"><span class="dot"></span> <span id="statusText">checking...</span></div>
-    </div>
-  </aside>
+      <div class="list" id="spaceList"></div>
+      <div class="sidebar-footer">
+        <div class="theme-row">
+          <span>Theme</span>
+          <button type="button" class="theme-toggle" id="themeToggle" title="Toggle light/dark mode">Light mode</button>
+        </div>
+        <div class="status-pill" id="statusPill"><span class="dot"></span> <span id="statusText">checking...</span></div>
+      </div>
+    </aside>
+    <div class="rail-resizer" id="spacesResizer" role="separator" aria-orientation="vertical" aria-label="Resize spaces panel" title="Drag to resize"></div>
+  </div>
 
   <main class="main">
     <!-- WELCOME (no space selected) -->
@@ -266,6 +325,11 @@
       <div class="icon">&#128194;</div>
       <div>Create or select a space to get started.</div>
       <button class="btn-primary" id="welcomeNewBtn">+ New space</button>
+      <div class="welcome-upload" id="welcomeDrop">
+        <div><strong>Drop a file here</strong> or click to upload</div>
+        <small>You will choose or create a space first</small>
+        <input type="file" id="welcomeFileInput" multiple accept=".pdf,.png,.jpg,.jpeg,.webp,.bmp,.tiff,.mp4,.mov,.avi,.mkv" hidden />
+      </div>
     </div>
 
     <!-- WORKSPACE (a space is selected) -->
@@ -326,12 +390,15 @@
 
       <!-- CHAT VIEW -->
       <section class="view" id="view-chat">
-        <div class="chats-rail">
-          <div class="rail-head">
-            <span class="title">Chats</span>
-            <button class="icon-btn" id="newChatBtn" title="New chat">+</button>
+        <div class="chats-rail-wrap" id="chatsRailWrap">
+          <div class="chats-rail" id="chatsRail">
+            <div class="rail-head">
+              <span class="title">Chats</span>
+              <button class="icon-btn" id="newChatBtn" title="New chat">+</button>
+            </div>
+            <div class="list" id="chatList"></div>
           </div>
-          <div class="list" id="chatList"></div>
+          <div class="rail-resizer" id="chatsResizer" role="separator" aria-orientation="vertical" aria-label="Resize chats panel" title="Drag to resize"></div>
         </div>
         <div class="chat-main">
           <div class="chat-scroll" id="chatScroll">
@@ -375,13 +442,53 @@
     </div>
   </div>
 
+  <div class="picker-modal" id="spacePickerModal">
+    <div class="picker-box">
+      <h3 id="spacePickerTitle">Choose a space</h3>
+      <p class="desc" id="spacePickerDesc"></p>
+      <div class="picker-option" id="spacePickExistingWrap">
+        <label><input type="radio" name="spacePickMode" value="existing" checked /> Add to existing space</label>
+        <select id="spacePickerExisting"></select>
+      </div>
+      <div class="picker-option">
+        <label><input type="radio" name="spacePickMode" value="new" /> Create new space</label>
+        <input type="text" id="spacePickerNewName" placeholder="Space name" />
+      </div>
+      <div class="picker-actions">
+        <button type="button" class="btn-ghost" id="spacePickerCancel">Cancel</button>
+        <button type="button" class="btn-primary" id="spacePickerOk">Continue</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="picker-modal" id="chatPickerModal">
+    <div class="picker-box">
+      <h3>Name this chat</h3>
+      <p class="desc" id="chatPickerDesc">Give your conversation a name.</p>
+      <div class="picker-option">
+        <input type="text" id="chatPickerName" placeholder="Chat name" />
+      </div>
+      <div class="picker-actions">
+        <button type="button" class="btn-ghost" id="chatPickerCancel">Cancel</button>
+        <button type="button" class="btn-primary" id="chatPickerOk">Start chat</button>
+      </div>
+    </div>
+  </div>
+
 <script>
 const API = "http://127.0.0.1:8000";
 const SUPPORTED = [".pdf",".png",".jpg",".jpeg",".webp",".bmp",".tiff",".mp4",".mov",".avi",".mkv"];
 const STORAGE_KEY = "multimodal_rag_state";
 const THEME_KEY = "multimodal_rag_theme";
+const RAIL_SIZES_KEY = "multimodal_rag_rails";
+const RAIL_DEFAULTS = { spaces: 240, chats: 220 };
+const RAIL_LIMITS = {
+  spaces: { min: 160, max: 440 },
+  chats: { min: 140, max: 380 },
+};
 
 const state = { spaceId: null, space: null, chatId: null, streaming: false, tab: "files" };
+let cachedSpaces = [];
 
 if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc =
   "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
@@ -403,6 +510,68 @@ document.getElementById("themeToggle").addEventListener("click", () => {
   setTheme(cur === "light" ? "dark" : "light");
 });
 initTheme();
+
+function loadRailSizes() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(RAIL_SIZES_KEY) || "{}");
+    const spaces = clampRail("spaces", saved.spaces ?? RAIL_DEFAULTS.spaces);
+    const chats = clampRail("chats", saved.chats ?? RAIL_DEFAULTS.chats);
+    document.documentElement.style.setProperty("--spaces-rail-w", spaces + "px");
+    document.documentElement.style.setProperty("--chats-rail-w", chats + "px");
+  } catch {
+    document.documentElement.style.setProperty("--spaces-rail-w", RAIL_DEFAULTS.spaces + "px");
+    document.documentElement.style.setProperty("--chats-rail-w", RAIL_DEFAULTS.chats + "px");
+  }
+}
+
+function clampRail(kind, value) {
+  const { min, max } = RAIL_LIMITS[kind];
+  return Math.min(max, Math.max(min, Math.round(Number(value) || RAIL_DEFAULTS[kind])));
+}
+
+function saveRailSizes() {
+  const spaces = parseInt(getComputedStyle(document.documentElement).getPropertyValue("--spaces-rail-w"), 10);
+  const chats = parseInt(getComputedStyle(document.documentElement).getPropertyValue("--chats-rail-w"), 10);
+  localStorage.setItem(RAIL_SIZES_KEY, JSON.stringify({
+    spaces: clampRail("spaces", spaces),
+    chats: clampRail("chats", chats),
+  }));
+}
+
+function setupRailResizer(handle, cssVar, kind) {
+  if (!handle) return;
+  const { min, max } = RAIL_LIMITS[kind];
+
+  handle.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = parseInt(getComputedStyle(document.documentElement).getPropertyValue(cssVar), 10);
+
+    document.body.classList.add("rail-resizing");
+    handle.classList.add("dragging");
+
+    function onMove(ev) {
+      const w = clampRail(kind, startW + (ev.clientX - startX));
+      document.documentElement.style.setProperty(cssVar, w + "px");
+    }
+
+    function onUp() {
+      document.body.classList.remove("rail-resizing");
+      handle.classList.remove("dragging");
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      saveRailSizes();
+    }
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  });
+}
+
+loadRailSizes();
+setupRailResizer(document.getElementById("spacesResizer"), "--spaces-rail-w", "spaces");
+setupRailResizer(document.getElementById("chatsResizer"), "--chats-rail-w", "chats");
 
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
@@ -487,6 +656,7 @@ async function loadSpaces() {
     const r = await fetch(API + "/spaces");
     spaces = (await r.json()).spaces || [];
   } catch {}
+  cachedSpaces = spaces;
   spaceList.innerHTML = "";
   if (!spaces.length) {
     spaceList.innerHTML = `<div class="muted-note">No spaces yet.</div>`;
@@ -529,17 +699,168 @@ async function loadSpaces() {
   }
 }
 
+async function createSpaceWithName(name) {
+  const r = await fetch(API + "/spaces", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: name.trim() || "Untitled space" }),
+  });
+  if (!r.ok) throw new Error("Could not create space");
+  const sp = await r.json();
+  await loadSpaces();
+  await selectSpace(sp.id);
+  return sp.id;
+}
+
 async function createSpace() {
   const name = prompt("Name your new space:", "Untitled space");
   if (name === null) return;
-  const r = await fetch(API + "/spaces", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name }),
-  });
-  const sp = await r.json();
-  await loadSpaces();
-  selectSpace(sp.id);
+  await createSpaceWithName(name);
 }
+
+function suggestSpaceName(fromText) {
+  if (!fromText) return "Untitled space";
+  const base = fromText.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+  return base.slice(0, 60) || "Untitled space";
+}
+
+function chatDisplayTitle(c) {
+  const t = (c && c.title || "").trim();
+  if (!t) return "New chat";
+  if (/^[a-f0-9]{32}(\.json)?$/i.test(t)) return "New chat";
+  if (t.toLowerCase() === "chat") return "New chat";
+  return t;
+}
+
+async function validateCurrentSpace() {
+  if (!state.spaceId) return false;
+  try {
+    const r = await fetch(`${API}/spaces/${state.spaceId}`);
+    if (!r.ok) return false;
+    state.space = await r.json();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function openSpacePicker({ message, suggestedName, preferExisting = true }) {
+  await loadSpaces();
+  return new Promise(resolve => {
+    const modal = document.getElementById("spacePickerModal");
+    const sel = document.getElementById("spacePickerExisting");
+    const newName = document.getElementById("spacePickerNewName");
+    const existingWrap = document.getElementById("spacePickExistingWrap");
+    document.getElementById("spacePickerDesc").textContent = message || "Choose where to put this content.";
+
+    sel.innerHTML = "";
+    for (const s of cachedSpaces) {
+      const opt = document.createElement("option");
+      opt.value = s.id;
+      opt.textContent = s.name;
+      sel.appendChild(opt);
+    }
+    if (state.spaceId && cachedSpaces.some(s => s.id === state.spaceId)) {
+      sel.value = state.spaceId;
+    }
+
+    const hasExisting = cachedSpaces.length > 0;
+    existingWrap.classList.toggle("disabled", !hasExisting);
+    document.querySelector('input[name="spacePickMode"][value="existing"]').disabled = !hasExisting;
+
+    if (hasExisting && preferExisting) {
+      document.querySelector('input[name="spacePickMode"][value="existing"]').checked = true;
+    } else {
+      document.querySelector('input[name="spacePickMode"][value="new"]').checked = true;
+    }
+
+    newName.value = suggestedName || "Untitled space";
+    modal.classList.add("open");
+    (hasExisting && preferExisting ? sel : newName).focus();
+
+    const cleanup = (result) => {
+      modal.classList.remove("open");
+      okBtn.removeEventListener("click", onOk);
+      cancelBtn.removeEventListener("click", onCancel);
+      resolve(result);
+    };
+
+    const onOk = async () => {
+      const mode = document.querySelector('input[name="spacePickMode"]:checked').value;
+      try {
+        if (mode === "existing") {
+          if (!sel.value) return cleanup(null);
+          await selectSpace(sel.value);
+          cleanup(state.spaceId);
+        } else {
+          const id = await createSpaceWithName(newName.value);
+          cleanup(id);
+        }
+      } catch (err) {
+        alert(err.message || "Could not set up space");
+      }
+    };
+
+    const onCancel = () => cleanup(null);
+    const okBtn = document.getElementById("spacePickerOk");
+    const cancelBtn = document.getElementById("spacePickerCancel");
+    okBtn.addEventListener("click", onOk);
+    cancelBtn.addEventListener("click", onCancel);
+  });
+}
+
+function openChatPicker(suggestedTitle) {
+  return new Promise(resolve => {
+    const modal = document.getElementById("chatPickerModal");
+    const input = document.getElementById("chatPickerName");
+    input.value = suggestedTitle || "New chat";
+    modal.classList.add("open");
+    input.focus();
+    input.select();
+
+    const cleanup = (val) => {
+      modal.classList.remove("open");
+      okBtn.removeEventListener("click", onOk);
+      cancelBtn.removeEventListener("click", onCancel);
+      input.removeEventListener("keydown", onKey);
+      resolve(val);
+    };
+
+    const onOk = () => {
+      const title = input.value.trim();
+      if (!title) return input.focus();
+      cleanup(title);
+    };
+    const onCancel = () => cleanup(null);
+    const onKey = (e) => {
+      if (e.key === "Enter") { e.preventDefault(); onOk(); }
+      if (e.key === "Escape") onCancel();
+    };
+
+    const okBtn = document.getElementById("chatPickerOk");
+    const cancelBtn = document.getElementById("chatPickerCancel");
+    okBtn.addEventListener("click", onOk);
+    cancelBtn.addEventListener("click", onCancel);
+    input.addEventListener("keydown", onKey);
+  });
+}
+
+async function ensureChat(suggestedTitle) {
+  if (state.chatId) return state.chatId;
+  const title = await openChatPicker(suggestedTitle);
+  if (!title) return null;
+  const r = await fetch(`${API}/spaces/${state.spaceId}/chats`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  if (!r.ok) {
+    const data = await r.json().catch(() => ({}));
+    throw new Error(data.detail || "Could not create chat");
+  }
+  const chat = await r.json();
+  await selectChat(chat.id);
+  return chat.id;
+}
+
 document.getElementById("newSpaceBtn").addEventListener("click", createSpace);
 document.getElementById("welcomeNewBtn").addEventListener("click", createSpace);
 
@@ -552,12 +873,23 @@ function showWelcome() {
 }
 
 async function selectSpace(id, opts = {}) {
-  state.spaceId = id;
   if (!opts.keepChat) state.chatId = null;
   try {
     const r = await fetch(`${API}/spaces/${id}`);
+    if (!r.ok) {
+      state.spaceId = null;
+      state.space = null;
+      showWelcome();
+      return false;
+    }
     state.space = await r.json();
-  } catch { return; }
+    state.spaceId = id;
+  } catch {
+    state.spaceId = null;
+    state.space = null;
+    showWelcome();
+    return false;
+  }
   document.getElementById("welcome").style.display = "none";
   document.getElementById("workspace").style.display = "flex";
   document.getElementById("spaceTitle").childNodes[0].textContent = state.space.name + " ";
@@ -571,6 +903,7 @@ async function selectSpace(id, opts = {}) {
   else if (opts.tab) switchTab(opts.tab);
   if (!opts.keepChat) resetChatView();
   persistState();
+  return true;
 }
 
 /* ---------- Tabs ---------- */
@@ -600,6 +933,21 @@ fileInput.addEventListener("change", () => { uploadFiles(fileInput.files); fileI
 folderzone.addEventListener("click", () => folderInput.click());
 folderInput.addEventListener("change", () => { uploadFiles(folderInput.files); folderInput.value = ""; });
 
+const welcomeDrop = document.getElementById("welcomeDrop");
+const welcomeFileInput = document.getElementById("welcomeFileInput");
+welcomeDrop.addEventListener("click", () => welcomeFileInput.click());
+welcomeDrop.addEventListener("dragover", e => { e.preventDefault(); welcomeDrop.classList.add("drag"); });
+welcomeDrop.addEventListener("dragleave", () => welcomeDrop.classList.remove("drag"));
+welcomeDrop.addEventListener("drop", e => {
+  e.preventDefault();
+  welcomeDrop.classList.remove("drag");
+  uploadFiles(e.dataTransfer.files);
+});
+welcomeFileInput.addEventListener("change", () => {
+  uploadFiles(welcomeFileInput.files);
+  welcomeFileInput.value = "";
+});
+
 function renderFiles() {
   filelist.innerHTML = "";
   const files = (state.space && state.space.files) || [];
@@ -626,13 +974,22 @@ function renderFiles() {
 }
 
 async function uploadFiles(fileListLike) {
-  if (!state.spaceId) return;
   const all = [...fileListLike];
   const files = all.filter(f => isSupported(f.name));
   const skipped = all.length - files.length;
   if (!files.length) {
     if (skipped) alert("No supported files found in the selection.");
     return;
+  }
+
+  const label = files.length === 1 ? files[0].name : `${files.length} files`;
+  if (!(await validateCurrentSpace())) {
+    const spaceId = await openSpacePicker({
+      message: `Where should "${label}" go? Pick an existing space or create a new one.`,
+      suggestedName: suggestSpaceName(files[0].name),
+      preferExisting: cachedSpaces.length > 0,
+    });
+    if (!spaceId) return;
   }
 
   const row = document.createElement("div");
@@ -649,8 +1006,11 @@ async function uploadFiles(fileListLike) {
   files.forEach(f => fd.append("files", f, f.name));
   try {
     const r = await fetch(`${API}/spaces/${state.spaceId}/files`, { method: "POST", body: fd });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.detail || "Upload failed");
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const detail = data.detail;
+      throw new Error(typeof detail === "string" ? detail : "Upload failed");
+    }
     const results = data.results || [];
     const ok = results.filter(x => x.status === "ok").length;
     const errs = results.filter(x => x.status === "error");
@@ -734,16 +1094,19 @@ const chatInput = document.getElementById("chatInput");
 const sendBtn = document.getElementById("sendBtn");
 
 document.getElementById("newChatBtn").addEventListener("click", async () => {
-  if (!state.spaceId) return;
-  const title = prompt("Name this chat:", "New chat");
-  if (title === null) return;
-  const r = await fetch(`${API}/spaces/${state.spaceId}/chats`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title: title.trim() || "New chat" }),
-  });
-  const chat = await r.json();
-  await loadChats();
-  selectChat(chat.id);
+  if (!(await validateCurrentSpace())) {
+    const spaceId = await openSpacePicker({
+      message: "Which space is this chat for?",
+      suggestedName: "Untitled space",
+      preferExisting: cachedSpaces.length > 0,
+    });
+    if (!spaceId) return;
+  }
+  try {
+    await ensureChat("New chat");
+  } catch (err) {
+    alert(err.message || "Could not create chat");
+  }
 });
 
 async function loadChats() {
@@ -760,14 +1123,14 @@ async function loadChats() {
     el.innerHTML = `<span class="li-name"></span>
       <span class="ren" title="Rename">&#9998;</span>
       <span class="del" title="Delete chat">&#10005;</span>`;
-    el.querySelector(".li-name").textContent = c.title;
+    el.querySelector(".li-name").textContent = chatDisplayTitle(c);
     el.addEventListener("click", e => {
       if (e.target.classList.contains("del") || e.target.classList.contains("ren")) return;
       selectChat(c.id);
     });
     el.querySelector(".ren").addEventListener("click", async e => {
       e.stopPropagation();
-      const newTitle = prompt("Rename chat:", c.title);
+      const newTitle = prompt("Rename chat:", chatDisplayTitle(c));
       if (newTitle === null || !newTitle.trim()) return;
       await fetch(`${API}/spaces/${state.spaceId}/chats/${c.id}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
@@ -1047,17 +1410,28 @@ sendBtn.addEventListener("click", sendMessage);
 
 async function sendMessage() {
   const query = chatInput.value.trim();
-  if (!query || state.streaming || !state.spaceId) return;
+  if (!query || state.streaming) return;
 
-  // Auto-create a chat if none is active.
-  if (!state.chatId) {
-    const title = prompt("Name this chat:", query.slice(0, 48));
-    const r = await fetch(`${API}/spaces/${state.spaceId}/chats`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title: (title || query.slice(0, 48)).trim() || "New chat" }),
-    });
-    state.chatId = (await r.json()).id;
-    await loadChats();
+  if (!modelsReady) {
+    alert("Models are still loading. Wait until the sidebar shows \"models ready\", then try again.");
+    return;
+  }
+
+  try {
+    if (!(await validateCurrentSpace())) {
+      const spaceId = await openSpacePicker({
+        message: "Which space is this chat for? Pick an existing space or create a new one.",
+        suggestedName: suggestSpaceName(query.slice(0, 40)),
+        preferExisting: cachedSpaces.length > 0,
+      });
+      if (!spaceId) return;
+    }
+
+    const chatId = await ensureChat(query.slice(0, 48));
+    if (!chatId) return;
+  } catch (err) {
+    alert(err.message || "Could not start chat");
+    return;
   }
 
   addBubble("user", query, false);
@@ -1068,7 +1442,8 @@ async function sendMessage() {
   sendBtn.disabled = true;
   chatInput.disabled = true;
 
-  const bubble = addBubble("assistant", "", false);
+  const bubble = addBubble("assistant", "Starting…", false);
+  bubble.classList.add("status-hint");
   const cursor = document.createElement("span");
   cursor.className = "cursor";
   bubble.appendChild(cursor);
@@ -1100,9 +1475,16 @@ async function sendMessage() {
         try { data = JSON.parse(line.slice(5).trim()); } catch { continue; }
         if (data.type === "token") {
           answer += data.text;
+          bubble.classList.remove("status-hint");
           bubble.textContent = answer;
           bubble.appendChild(cursor);
           chatScroll.scrollTop = chatScroll.scrollHeight;
+        } else if (data.type === "status") {
+          if (!answer) {
+            bubble.textContent = data.text;
+            bubble.classList.add("status-hint");
+            bubble.appendChild(cursor);
+          }
         } else if (data.type === "context") {
           updateContextRing(data);
         } else if (data.type === "sources") {
@@ -1135,9 +1517,11 @@ async function init() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
     if (saved.spaceId) {
-      await selectSpace(saved.spaceId, { keepTab: true, tab: saved.tab, keepChat: true });
-      if (saved.tab) switchTab(saved.tab);
-      if (saved.chatId) await selectChat(saved.chatId);
+      const ok = await selectSpace(saved.spaceId, { keepTab: true, tab: saved.tab, keepChat: true });
+      if (ok) {
+        if (saved.tab) switchTab(saved.tab);
+        if (saved.chatId) await selectChat(saved.chatId);
+      }
     }
   } catch {}
 }

@@ -1,5 +1,6 @@
 """Query pipeline: embed -> hybrid search -> rerank -> generate (with chat history)."""
 
+import asyncio
 import re
 from threading import Thread
 
@@ -27,7 +28,10 @@ from rag_context import (
 QUERY_INSTRUCTION = "Retrieve relevant documents for the query."
 RERANK_INSTRUCTION = "Retrieve images or text relevant to the user's query."
 MAX_NEW_TOKENS = 1024
+SUMMARY_MAX_NEW_TOKENS = 512
 META_MAX_NEW_TOKENS = 256
+# Only skip rerank for tiny corpora with simple positional/count queries (not summaries).
+SKIP_RERANK_MAX_POINTS = int(__import__("os").environ.get("SKIP_RERANK_MAX_POINTS", "4"))
 GEN_KWARGS = {
     "do_sample": False,
     "repetition_penalty": 1.15,
@@ -110,13 +114,75 @@ def _meta_fast_answer(query: str) -> str | None:
     return None
 
 
-def _top_k_for_space(n_points: int) -> tuple[int, int]:
+def _top_k_for_space(n_points: int, overview: bool = False) -> tuple[int, int]:
     """Return (retrieve_k, final_k) based on corpus size in this space."""
     if n_points <= 12:
-        return 24, 10
+        retrieve, final = 24, min(8, n_points)
+        if overview:
+            final = min(4, n_points)  # overview: fewer, distinct passages beat many duplicates
+        return retrieve, final
     if n_points <= 30:
         return 30, 8
     return 40, 5
+
+
+def _chunk_dedupe_key(hit) -> tuple:
+    pay = hit.payload if hasattr(hit, "payload") else hit
+    return (
+        pay.get("file_id"),
+        pay.get("page"),
+        pay.get("paragraph_index"),
+        pay.get("chunk_kind"),
+        pay.get("doc_word_start", pay.get("word_start")),
+    )
+
+
+def _dedupe_hits(hits: list) -> list:
+    """Drop near-duplicate chunks (same paragraph/window) — keeps context clean."""
+    seen: set = set()
+    out = []
+    for h in hits:
+        key = _chunk_dedupe_key(h)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(h)
+    return out
+
+
+def _should_skip_rerank(n_points: int, query: str, pos_hints: dict) -> bool:
+    """Skip rerank only for tiny corpora + simple positional/count queries."""
+    if _is_overview_query(query):
+        return False
+    if n_points > SKIP_RERANK_MAX_POINTS:
+        return False
+    if pos_hints.get("wants_word_count"):
+        return True
+    if pos_hints.get("paragraph_index") is not None or pos_hints.get("word_target"):
+        return True
+    return False
+
+
+def _select_overview_hits(hits: list, top_k: int) -> list:
+    """Prefer one whole-page chunk plus top distinct paragraphs."""
+    hits = _dedupe_hits(hits)
+    full = [h for h in hits if (h.payload or {}).get("chunk_kind") == "page_full"]
+    rest = [h for h in hits if h not in full]
+    if full:
+        return full[:1] + rest[: max(1, top_k - 1)]
+    return rest[:top_k]
+
+
+def _is_overview_query(query: str) -> bool:
+    q = query.lower().strip()
+    return bool(re.search(
+        r"what('s| is)\s+(this|the|it)\s+(document|pdf|file|paper|assignment|text)\s+about|"
+        r"what\s+is\s+(this|the)\s+about|"
+        r"summarize|summary|overview|main\s+(idea|topic|point|theme)|"
+        r"what\s+does\s+(this|the|it)\s+(say|discuss|cover)|"
+        r"briefly\s+describe",
+        q,
+    ))
 
 
 def _doc_text_for_rerank(pay: dict) -> str:
@@ -268,16 +334,27 @@ async def run_query(user_query: str, space_id: str, chat_id: str):
         return
 
     pos_hints = parse_position(user_query)
-    top_k_retrieve, top_k_final = _top_k_for_space(count_points(space_id))
+    n_points = count_points(space_id)
+    overview = _is_overview_query(user_query)
+    top_k_retrieve, top_k_final = _top_k_for_space(n_points, overview)
+
+    yield {"type": "status", "text": "Embedding your question…"}
 
     async with await manager.embedder() as embedder:
-        q_vec = embedder.encode(
-            [user_query], prompt=QUERY_INSTRUCTION, normalize_embeddings=True,
-        )[0]
+        q_vec = await asyncio.to_thread(
+            embedder.encode,
+            [user_query],
+            prompt=QUERY_INSTRUCTION,
+            normalize_embeddings=True,
+        )
+        q_vec = q_vec[0]
+
+    yield {"type": "status", "text": "Searching documents…"}
 
     hits = hybrid_search(q_vec, user_query, space_id, top_k=top_k_retrieve, pos_hints=pos_hints)
     hits = post_filter_hits(hits, pos_hints)
     hits = boost_hits_by_position(hits, pos_hints)
+    hits = _dedupe_hits(hits)
 
     if not hits:
         yield {"type": "sources", "sources": []}
@@ -286,13 +363,23 @@ async def run_query(user_query: str, space_id: str, chat_id: str):
         yield {"type": "done"}
         return
 
-    async with await manager.reranker() as reranker:
-        docs = [_doc_text_for_rerank(h.payload) for h in hits]
-        pairs = [(user_query, d) for d in docs]
-        scores = reranker.predict(pairs, prompt=RERANK_INSTRUCTION)
-        scores = np.asarray(scores, dtype=float)
-        ranked = np.argsort(scores)[::-1][:top_k_final]
-    reranked_hits = [hits[i] for i in ranked]
+    if _should_skip_rerank(n_points, user_query, pos_hints):
+        yield {"type": "status", "text": "Selecting passages…"}
+        reranked_hits = hits[:top_k_final]
+    else:
+        yield {"type": "status", "text": "Reranking passages…"}
+        async with await manager.reranker() as reranker:
+            docs = [_doc_text_for_rerank(h.payload) for h in hits]
+            pairs = [(user_query, d) for d in docs]
+            scores = await asyncio.to_thread(
+                reranker.predict, pairs, prompt=RERANK_INSTRUCTION,
+            )
+            scores = np.asarray(scores, dtype=float)
+            ranked = np.argsort(scores)[::-1][:top_k_final]
+        reranked_hits = [hits[i] for i in ranked]
+
+    if overview:
+        reranked_hits = _select_overview_hits(reranked_hits, top_k_final)
 
     used = hist_tokens + estimate_tokens(user_query) + 200
     packed_hits, retr_tokens = pack_retrieval_chunks(reranked_hits, MAX_CONTEXT_TOKENS, used)
@@ -301,6 +388,7 @@ async def run_query(user_query: str, space_id: str, chat_id: str):
     yield {"type": "context", **context_status(used, summarized=summarized)}
 
     context_parts, sources = [], []
+    seen_sources: set = set()
     count_fact = word_count_answer(reranked_hits, pos_hints)
     exact_word = _extract_word_at_hint(reranked_hits[0].payload, pos_hints) if reranked_hits else None
 
@@ -312,12 +400,16 @@ async def run_query(user_query: str, space_id: str, chat_id: str):
 
     for hit in packed_hits:
         pay = hit.payload
+        src_key = _chunk_dedupe_key(hit)
         header = _format_source_header(pay)
         facts = _position_facts_for_chunk(pay)
         if pay.get("modality") == "text":
             context_parts.append(f"[SOURCE: {header}]\n{facts}\n{pay.get('text', '')}")
         else:
             context_parts.append(f"[SOURCE: {header}]")
+        if src_key in seen_sources:
+            continue
+        seen_sources.add(src_key)
         sources.append({
             "file_id": pay.get("file_id", ""),
             "filename": pay.get("filename", ""),
@@ -351,6 +443,7 @@ async def run_query(user_query: str, space_id: str, chat_id: str):
             "region (header/body/footer), and exact word counts. "
             "Use PRECISE COUNT and EXACT WORD AT POSITION facts when present. "
             "If the answer is not in the context, say so clearly. "
+            "Never invent dates, deadlines, word limits, or requirements — copy them exactly from the context. "
             "Reply in the same language the user writes in when appropriate. "
             "Keep answers concise; do not repeat the same sentence. "
             "Cite sources using filename, page, paragraph, and word positions."
@@ -364,7 +457,9 @@ async def run_query(user_query: str, space_id: str, chat_id: str):
 
         messages = _build_generator_messages(system_prompt, hist_msgs, user_query, context_str)
 
+        max_tokens = SUMMARY_MAX_NEW_TOKENS if overview else MAX_NEW_TOKENS
+        yield {"type": "status", "text": "Writing answer…"}
         yield {"type": "sources", "sources": sources}
-        for token in _stream_generate(gen["model"], gen["processor"], messages, MAX_NEW_TOKENS):
+        for token in _stream_generate(gen["model"], gen["processor"], messages, max_tokens):
             yield {"type": "token", "text": token}
         yield {"type": "done"}
