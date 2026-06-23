@@ -23,6 +23,17 @@ MAX_IMAGE_DIM = 1024  # downscale large images before embedding to cap VRAM use
 
 DOC_INSTRUCTION = "Represent the content for retrieval."
 
+# File types we can ingest. Used by the folder-upload path to skip the rest.
+SUPPORTED_EXTS = {
+    ".pdf",
+    ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff",
+    ".mp4", ".avi", ".mov", ".mkv",
+}
+
+
+def is_supported(filename: str) -> bool:
+    return Path(filename).suffix.lower() in SUPPORTED_EXTS
+
 
 def _cap_image(pil_img: Image.Image, max_dim: int = MAX_IMAGE_DIM) -> Image.Image:
     """Downscale very large images so the vision encoder doesn't blow up VRAM."""
@@ -136,7 +147,8 @@ def process_video(file_bytes: bytes, filename: str) -> list:
     return items
 
 
-async def ingest_file(file_bytes: bytes, filename: str) -> int:
+async def ingest_file(file_bytes: bytes, filename: str, space_id: str, file_id: str) -> int:
+    """Chunk + embed a file and store its vectors, tagged with space_id/file_id."""
     ensure_collection()
     ext = Path(filename).suffix.lower()
 
@@ -174,6 +186,8 @@ async def ingest_file(file_bytes: bytes, filename: str) -> int:
             for vec, item in zip(vecs, batch):
                 all_vectors.append(vec)
                 pay = dict(item["meta"])
+                pay["space_id"] = space_id
+                pay["file_id"] = file_id
                 if item["type"] == "text":
                     pay["text"] = item["content"]
                 all_payloads.append(pay)

@@ -18,6 +18,7 @@
     --accent: #14b8a6;
     --accent-dim: #0d8276;
     --user-bubble: #14b8a6;
+    --danger: #ef4444;
     --radius: 12px;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -32,99 +33,106 @@
     font-size: 14px;
   }
 
-  /* Sidebar */
+  /* Spaces sidebar */
   .sidebar {
-    width: 220px;
-    background: var(--surface);
-    border-right: 1px solid var(--border);
-    display: flex;
-    flex-direction: column;
-    padding: 20px 14px;
-    flex-shrink: 0;
+    width: 240px; background: var(--surface); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; padding: 18px 12px; flex-shrink: 0;
   }
-  .logo {
-    display: flex; align-items: center; gap: 10px;
-    font-weight: 700; font-size: 16px; padding: 6px 8px 24px;
-  }
+  .logo { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 16px; padding: 6px 8px 18px; }
   .logo .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 12px var(--accent); }
-  .nav-item {
-    display: flex; align-items: center; gap: 10px;
-    padding: 10px 12px; border-radius: 8px; cursor: pointer;
-    color: var(--text-dim); font-weight: 500; margin-bottom: 4px;
-    transition: background .15s ease, color .15s ease;
-    user-select: none;
+  .rail-head { display: flex; align-items: center; justify-content: space-between; padding: 4px 8px 10px; }
+  .rail-head .title { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--text-dim); font-weight: 600; }
+  .icon-btn {
+    background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+    width: 26px; height: 26px; border-radius: 7px; cursor: pointer; font-size: 16px; line-height: 1;
+    display: inline-flex; align-items: center; justify-content: center; transition: all .15s ease;
   }
-  .nav-item svg { width: 18px; height: 18px; }
-  .nav-item:hover { background: var(--surface-2); color: var(--text); }
-  .nav-item.active { background: var(--surface-2); color: var(--accent); }
-  .sidebar-footer { margin-top: auto; font-size: 11px; color: var(--text-dim); padding: 8px; }
+  .icon-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .list { overflow-y: auto; flex: 1; }
+  .list-item {
+    display: flex; align-items: center; gap: 8px; padding: 9px 10px; border-radius: 8px;
+    cursor: pointer; color: var(--text-dim); font-weight: 500; margin-bottom: 3px;
+    transition: background .15s ease, color .15s ease; user-select: none;
+  }
+  .list-item:hover { background: var(--surface-2); color: var(--text); }
+  .list-item.active { background: var(--surface-2); color: var(--accent); }
+  .list-item .li-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .list-item .li-sub { font-size: 11px; color: var(--text-dim); }
+  .list-item .del { opacity: 0; color: var(--text-dim); font-size: 14px; padding: 0 4px; border-radius: 4px; }
+  .list-item:hover .del { opacity: 1; }
+  .list-item .del:hover { color: var(--danger); }
+  .muted-note { color: var(--text-dim); font-size: 12px; padding: 10px; text-align: center; }
+  .sidebar-footer { margin-top: 12px; font-size: 11px; color: var(--text-dim); padding: 8px; border-top: 1px solid var(--border); }
   .status-pill { display: inline-flex; align-items: center; gap: 6px; }
   .status-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: #555; }
   .status-pill.online .dot { background: var(--accent); }
 
   /* Main */
   .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-  .view { display: none; flex: 1; flex-direction: column; min-height: 0; }
-  .view.active { display: flex; }
-  .header { padding: 22px 32px; border-bottom: 1px solid var(--border); }
-  .header h1 { font-size: 18px; font-weight: 600; }
-  .header p { color: var(--text-dim); margin-top: 4px; }
+  .topbar { padding: 18px 28px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 20px; }
+  .topbar h1 { font-size: 17px; font-weight: 600; }
+  .topbar h1 small { display: block; color: var(--text-dim); font-weight: 400; font-size: 12px; margin-top: 2px; }
+  .tabs { margin-left: auto; display: flex; gap: 6px; }
+  .tab { padding: 8px 16px; border-radius: 8px; cursor: pointer; color: var(--text-dim); font-weight: 500; user-select: none; transition: all .15s ease; }
+  .tab:hover { background: var(--surface-2); color: var(--text); }
+  .tab.active { background: var(--surface-2); color: var(--accent); }
 
-  /* Ingest */
-  .ingest-body { padding: 28px 32px; overflow-y: auto; }
+  .view { display: none; flex: 1; min-height: 0; }
+  .view.active { display: flex; flex-direction: column; }
+
+  /* Welcome (no space selected) */
+  .welcome { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; color: var(--text-dim); }
+  .welcome .icon { font-size: 44px; opacity: .6; }
+  .btn-primary {
+    background: var(--accent); color: #04201d; border: none; border-radius: 10px;
+    padding: 11px 20px; font-weight: 600; cursor: pointer; font-family: inherit; transition: background .15s ease;
+  }
+  .btn-primary:hover { background: var(--accent-dim); color: #d6fffb; }
+
+  /* Files view */
+  .files-body { padding: 26px 28px; overflow-y: auto; }
+  .dz-actions { display: flex; gap: 12px; margin-bottom: 18px; }
   .dropzone {
-    border: 2px dashed var(--border); border-radius: var(--radius);
-    padding: 48px 24px; text-align: center; cursor: pointer;
+    flex: 1; border: 2px dashed var(--border); border-radius: var(--radius);
+    padding: 34px 24px; text-align: center; cursor: pointer; background: var(--surface);
     transition: border-color .15s ease, background .15s ease;
-    background: var(--surface);
   }
   .dropzone:hover, .dropzone.drag { border-color: var(--accent); background: var(--surface-2); }
-  .dropzone .icon { font-size: 34px; margin-bottom: 12px; opacity: .8; }
+  .dropzone .icon { font-size: 30px; margin-bottom: 10px; opacity: .8; }
   .dropzone strong { color: var(--accent); }
   .dropzone small { display: block; color: var(--text-dim); margin-top: 8px; }
-  .filelist { margin-top: 24px; display: flex; flex-direction: column; gap: 10px; }
-  .file-row {
-    display: flex; align-items: center; gap: 14px;
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 10px; padding: 14px 16px;
-  }
+  .filelist { display: flex; flex-direction: column; gap: 10px; }
+  .section-label { font-size: 12px; color: var(--text-dim); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; margin: 22px 0 12px; }
+  .file-row { display: flex; align-items: center; gap: 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 13px 16px; }
+  .file-row .ficon { font-size: 18px; opacity: .8; }
   .file-row .fname { font-weight: 500; flex: 1; word-break: break-all; }
+  .file-row .fmeta { font-size: 12px; color: var(--text-dim); }
   .file-row .fstatus { font-size: 12px; color: var(--text-dim); display: flex; align-items: center; gap: 8px; }
   .file-row .fstatus.ok { color: var(--accent); }
-  .file-row .fstatus.err { color: #ef4444; }
-  .spinner {
-    width: 14px; height: 14px; border: 2px solid var(--border);
-    border-top-color: var(--accent); border-radius: 50%;
-    animation: spin .7s linear infinite;
-  }
+  .file-row .fstatus.err { color: var(--danger); }
+  .file-row .remove { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 16px; padding: 4px 8px; border-radius: 6px; }
+  .file-row .remove:hover { color: var(--danger); background: var(--surface-2); }
+  .spinner { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
 
-  /* Chat */
-  .chat-scroll { flex: 1; overflow-y: auto; padding: 28px 32px; }
-  .empty-state {
-    height: 100%; display: flex; flex-direction: column;
-    align-items: center; justify-content: center; color: var(--text-dim); gap: 8px;
-  }
+  /* Chat view */
+  #view-chat { flex-direction: row; }
+  .chats-rail { width: 220px; border-right: 1px solid var(--border); display: flex; flex-direction: column; padding: 14px 10px; flex-shrink: 0; }
+  .chat-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .chat-scroll { flex: 1; overflow-y: auto; padding: 26px 28px; }
+  .empty-state { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--text-dim); gap: 8px; }
   .empty-state .icon { font-size: 40px; opacity: .6; }
   .msg { max-width: 760px; margin: 0 auto 22px; display: flex; }
   .msg.user { justify-content: flex-end; }
-  .bubble {
-    padding: 12px 16px; border-radius: 14px; line-height: 1.55;
-    white-space: pre-wrap; word-wrap: break-word; max-width: 80%;
-  }
+  .bubble { padding: 12px 16px; border-radius: 14px; line-height: 1.55; white-space: pre-wrap; word-wrap: break-word; max-width: 80%; }
   .msg.user .bubble { background: var(--user-bubble); color: #04201d; border-bottom-right-radius: 4px; font-weight: 500; }
   .msg.assistant .bubble { background: var(--surface); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
   .cursor { display: inline-block; width: 8px; height: 16px; background: var(--accent); margin-left: 2px; vertical-align: text-bottom; animation: blink 1s steps(2) infinite; }
   @keyframes blink { 50% { opacity: 0; } }
 
   .sources { max-width: 760px; margin: -10px auto 22px; }
-  details.sources-panel {
-    background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
-  }
-  details.sources-panel summary {
-    padding: 10px 14px; cursor: pointer; color: var(--text-dim);
-    font-size: 12px; font-weight: 500; user-select: none; list-style: none;
-  }
+  details.sources-panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  details.sources-panel summary { padding: 10px 14px; cursor: pointer; color: var(--text-dim); font-size: 12px; font-weight: 500; user-select: none; list-style: none; }
   details.sources-panel summary::-webkit-details-marker { display: none; }
   details.sources-panel summary:hover { color: var(--text); }
   .source-grid { display: flex; flex-wrap: wrap; gap: 12px; padding: 4px 14px 16px; }
@@ -136,94 +144,123 @@
   .badge { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 4px; background: var(--accent-dim); color: #d6fffb; margin-top: 4px; }
 
   /* Composer */
-  .composer { border-top: 1px solid var(--border); padding: 16px 32px; }
+  .composer { border-top: 1px solid var(--border); padding: 16px 28px; }
   .composer-inner { max-width: 760px; margin: 0 auto; display: flex; gap: 10px; align-items: flex-end; }
   textarea#chatInput {
     flex: 1; resize: none; background: var(--surface); color: var(--text);
     border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px;
-    font-family: inherit; font-size: 14px; line-height: 1.4; max-height: 160px;
-    transition: border-color .15s ease;
+    font-family: inherit; font-size: 14px; line-height: 1.4; max-height: 160px; transition: border-color .15s ease;
   }
   textarea#chatInput:focus { outline: none; border-color: var(--accent); }
+  textarea#chatInput:disabled { opacity: .5; }
   button.send {
     background: var(--accent); color: #04201d; border: none; border-radius: 12px;
-    padding: 12px 20px; font-weight: 600; cursor: pointer; font-family: inherit;
-    transition: background .15s ease, opacity .15s ease;
+    padding: 12px 20px; font-weight: 600; cursor: pointer; font-family: inherit; transition: background .15s ease, opacity .15s ease;
   }
   button.send:hover { background: var(--accent-dim); color: #d6fffb; }
   button.send:disabled { opacity: .5; cursor: not-allowed; }
 </style>
 </head>
 <body>
+  <!-- SPACES SIDEBAR -->
   <aside class="sidebar">
     <div class="logo"><span class="dot"></span> Multimodal RAG</div>
-    <div class="nav-item active" data-view="ingest">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
-      Ingest
+    <div class="rail-head">
+      <span class="title">Spaces</span>
+      <button class="icon-btn" id="newSpaceBtn" title="New space">+</button>
     </div>
-    <div class="nav-item" data-view="chat">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
-      Chat
-    </div>
+    <div class="list" id="spaceList"></div>
     <div class="sidebar-footer">
       <div class="status-pill" id="statusPill"><span class="dot"></span> <span id="statusText">checking...</span></div>
     </div>
   </aside>
 
   <main class="main">
-    <!-- INGEST VIEW -->
-    <section class="view active" id="view-ingest">
-      <div class="header">
-        <h1>Ingest</h1>
-        <p>Upload PDFs, images, or videos to embed and store in the vector database.</p>
-      </div>
-      <div class="ingest-body">
-        <div class="dropzone" id="dropzone">
-          <div class="icon">&#8682;</div>
-          <div><strong>Click to browse</strong> or drag &amp; drop files here</div>
-          <small>Supported: .pdf .png .jpg .jpeg .webp .mp4 .mov .avi .mkv</small>
-          <input type="file" id="fileInput" multiple accept=".pdf,.png,.jpg,.jpeg,.webp,.bmp,.tiff,.mp4,.mov,.avi,.mkv" hidden />
-        </div>
-        <div class="filelist" id="filelist"></div>
-      </div>
-    </section>
+    <!-- WELCOME (no space selected) -->
+    <div class="welcome" id="welcome">
+      <div class="icon">&#128194;</div>
+      <div>Create or select a space to get started.</div>
+      <button class="btn-primary" id="welcomeNewBtn">+ New space</button>
+    </div>
 
-    <!-- CHAT VIEW -->
-    <section class="view" id="view-chat">
-      <div class="header">
-        <h1>Chat</h1>
-        <p>Ask questions grounded in your ingested knowledge base.</p>
-      </div>
-      <div class="chat-scroll" id="chatScroll">
-        <div class="empty-state" id="emptyState">
-          <div class="icon">&#128172;</div>
-          <div>Upload files in the Ingest tab, then ask questions here.</div>
+    <!-- WORKSPACE (a space is selected) -->
+    <div class="main" id="workspace" style="display:none;">
+      <div class="topbar">
+        <h1 id="spaceTitle">Space<small id="spaceSub"></small></h1>
+        <div class="tabs">
+          <div class="tab active" data-view="files">Files</div>
+          <div class="tab" data-view="chat">Chat</div>
         </div>
       </div>
-      <div class="composer">
-        <div class="composer-inner">
-          <textarea id="chatInput" rows="1" placeholder="Ask a question..."></textarea>
-          <button class="send" id="sendBtn">Send</button>
+
+      <!-- FILES VIEW -->
+      <section class="view active" id="view-files">
+        <div class="files-body">
+          <div class="dz-actions">
+            <div class="dropzone" id="dropzone">
+              <div class="icon">&#8682;</div>
+              <div><strong>Click to browse files</strong> or drag &amp; drop here</div>
+              <small>Supported: .pdf .png .jpg .jpeg .webp .mp4 .mov .avi .mkv</small>
+              <input type="file" id="fileInput" multiple accept=".pdf,.png,.jpg,.jpeg,.webp,.bmp,.tiff,.mp4,.mov,.avi,.mkv" hidden />
+            </div>
+            <div class="dropzone" id="folderzone" style="flex:0 0 220px;">
+              <div class="icon">&#128193;</div>
+              <div><strong>Select a folder</strong></div>
+              <small>Ingests all supported files inside</small>
+              <input type="file" id="folderInput" webkitdirectory directory multiple hidden />
+            </div>
+          </div>
+          <div class="filelist" id="uploadList"></div>
+          <div class="section-label">Files in this space</div>
+          <div class="filelist" id="filelist"></div>
         </div>
-      </div>
-    </section>
+      </section>
+
+      <!-- CHAT VIEW -->
+      <section class="view" id="view-chat">
+        <div class="chats-rail">
+          <div class="rail-head">
+            <span class="title">Chats</span>
+            <button class="icon-btn" id="newChatBtn" title="New chat">+</button>
+          </div>
+          <div class="list" id="chatList"></div>
+        </div>
+        <div class="chat-main">
+          <div class="chat-scroll" id="chatScroll">
+            <div class="empty-state" id="emptyState">
+              <div class="icon">&#128172;</div>
+              <div>Start a new chat to ask questions about this space.</div>
+            </div>
+          </div>
+          <div class="composer">
+            <div class="composer-inner">
+              <textarea id="chatInput" rows="1" placeholder="Ask a question..."></textarea>
+              <button class="send" id="sendBtn">Send</button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
   </main>
 
 <script>
 const API = "http://127.0.0.1:8000";
+const SUPPORTED = [".pdf",".png",".jpg",".jpeg",".webp",".bmp",".tiff",".mp4",".mov",".avi",".mkv"];
 
-/* ---------- Tab navigation ---------- */
-document.querySelectorAll(".nav-item").forEach(item => {
-  item.addEventListener("click", () => {
-    document.querySelectorAll(".nav-item").forEach(n => n.classList.remove("active"));
-    item.classList.add("active");
-    const view = item.dataset.view;
-    document.querySelectorAll(".view").forEach(v => v.classList.remove("active"));
-    document.getElementById("view-" + view).classList.add("active");
-  });
-});
+const state = { spaceId: null, space: null, chatId: null, streaming: false };
 
-/* ---------- Health check ---------- */
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+}
+function kindIcon(kind) {
+  return ({ pdf:"\uD83D\uDCC4", image:"\uD83D\uDDBC\uFE0F", video:"\uD83C\uDFAC" }[kind]) || "\uD83D\uDCCE";
+}
+function isSupported(name) {
+  name = name.toLowerCase();
+  return SUPPORTED.some(ext => name.endsWith(ext));
+}
+
+/* ---------- Health ---------- */
 async function checkHealth() {
   const pill = document.getElementById("statusPill");
   const txt = document.getElementById("statusText");
@@ -236,66 +273,234 @@ async function checkHealth() {
 checkHealth();
 setInterval(checkHealth, 8000);
 
-/* ---------- Ingest ---------- */
+/* ---------- Spaces ---------- */
+const spaceList = document.getElementById("spaceList");
+
+async function loadSpaces() {
+  let spaces = [];
+  try {
+    const r = await fetch(API + "/spaces");
+    spaces = (await r.json()).spaces || [];
+  } catch {}
+  spaceList.innerHTML = "";
+  if (!spaces.length) {
+    spaceList.innerHTML = `<div class="muted-note">No spaces yet.</div>`;
+    return;
+  }
+  for (const s of spaces) {
+    const el = document.createElement("div");
+    el.className = "list-item" + (s.id === state.spaceId ? " active" : "");
+    el.innerHTML = `<span class="li-name"></span>
+      <span class="li-sub">${s.n_files}</span>
+      <span class="del" title="Delete space">&#10005;</span>`;
+    el.querySelector(".li-name").textContent = s.name;
+    el.addEventListener("click", e => {
+      if (e.target.classList.contains("del")) return;
+      selectSpace(s.id);
+    });
+    el.querySelector(".del").addEventListener("click", async e => {
+      e.stopPropagation();
+      if (!confirm(`Delete space "${s.name}"? This removes its files, vectors, and chats.`)) return;
+      await fetch(`${API}/spaces/${s.id}`, { method: "DELETE" });
+      if (state.spaceId === s.id) { state.spaceId = null; state.space = null; showWelcome(); }
+      loadSpaces();
+    });
+    spaceList.appendChild(el);
+  }
+}
+
+async function createSpace() {
+  const name = prompt("Name your new space:", "Untitled space");
+  if (name === null) return;
+  const r = await fetch(API + "/spaces", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  const sp = await r.json();
+  await loadSpaces();
+  selectSpace(sp.id);
+}
+document.getElementById("newSpaceBtn").addEventListener("click", createSpace);
+document.getElementById("welcomeNewBtn").addEventListener("click", createSpace);
+
+function showWelcome() {
+  document.getElementById("welcome").style.display = "flex";
+  document.getElementById("workspace").style.display = "none";
+}
+
+async function selectSpace(id) {
+  state.spaceId = id;
+  state.chatId = null;
+  try {
+    const r = await fetch(`${API}/spaces/${id}`);
+    state.space = await r.json();
+  } catch { return; }
+  document.getElementById("welcome").style.display = "none";
+  document.getElementById("workspace").style.display = "flex";
+  document.getElementById("spaceTitle").childNodes[0].textContent = state.space.name + " ";
+  loadSpaces();
+  renderFiles();
+  loadChats();
+  switchTab("files");
+  resetChatView();
+}
+
+/* ---------- Tabs ---------- */
+function switchTab(view) {
+  document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.dataset.view === view));
+  document.querySelectorAll(".view").forEach(v => v.classList.remove("active"));
+  document.getElementById("view-" + view).classList.add("active");
+}
+document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () => switchTab(t.dataset.view)));
+
+/* ---------- Files ---------- */
 const dropzone = document.getElementById("dropzone");
 const fileInput = document.getElementById("fileInput");
+const folderzone = document.getElementById("folderzone");
+const folderInput = document.getElementById("folderInput");
 const filelist = document.getElementById("filelist");
+const uploadList = document.getElementById("uploadList");
 
 dropzone.addEventListener("click", () => fileInput.click());
 dropzone.addEventListener("dragover", e => { e.preventDefault(); dropzone.classList.add("drag"); });
 dropzone.addEventListener("dragleave", () => dropzone.classList.remove("drag"));
-dropzone.addEventListener("drop", e => {
-  e.preventDefault(); dropzone.classList.remove("drag");
-  handleFiles(e.dataTransfer.files);
-});
-fileInput.addEventListener("change", () => handleFiles(fileInput.files));
+dropzone.addEventListener("drop", e => { e.preventDefault(); dropzone.classList.remove("drag"); uploadFiles(e.dataTransfer.files); });
+fileInput.addEventListener("change", () => { uploadFiles(fileInput.files); fileInput.value = ""; });
 
-function handleFiles(files) {
-  [...files].forEach(uploadFile);
-  fileInput.value = "";
+folderzone.addEventListener("click", () => folderInput.click());
+folderInput.addEventListener("change", () => { uploadFiles(folderInput.files); folderInput.value = ""; });
+
+function renderFiles() {
+  filelist.innerHTML = "";
+  const files = (state.space && state.space.files) || [];
+  if (!files.length) {
+    filelist.innerHTML = `<div class="muted-note">No files yet. Upload some above.</div>`;
+    return;
+  }
+  for (const f of files) {
+    const row = document.createElement("div");
+    row.className = "file-row";
+    row.innerHTML = `<span class="ficon">${kindIcon(f.kind)}</span>
+      <span class="fname"></span>
+      <span class="fmeta">${f.n_chunks} chunks</span>
+      <button class="remove" title="Remove from space">&#10005;</button>`;
+    row.querySelector(".fname").textContent = f.original_name;
+    row.querySelector(".remove").addEventListener("click", async () => {
+      if (!confirm(`Remove "${f.original_name}" from this space?`)) return;
+      await fetch(`${API}/spaces/${state.spaceId}/files/${f.file_id}`, { method: "DELETE" });
+      await selectSpace(state.spaceId);
+      switchTab("files");
+    });
+    filelist.appendChild(row);
+  }
 }
 
-async function uploadFile(file) {
+async function uploadFiles(fileListLike) {
+  if (!state.spaceId) return;
+  const all = [...fileListLike];
+  const files = all.filter(f => isSupported(f.name));
+  const skipped = all.length - files.length;
+  if (!files.length) {
+    if (skipped) alert("No supported files found in the selection.");
+    return;
+  }
+
   const row = document.createElement("div");
   row.className = "file-row";
-  row.innerHTML = `
+  row.innerHTML = `<span class="ficon">&#8635;</span>
     <span class="fname"></span>
-    <span class="fstatus"><span class="spinner"></span> processing...</span>`;
-  row.querySelector(".fname").textContent = file.name;
-  filelist.prepend(row);
+    <span class="fstatus"><span class="spinner"></span> uploading & embedding...</span>`;
+  row.querySelector(".fname").textContent =
+    files.length === 1 ? files[0].name : `${files.length} files` + (skipped ? ` (${skipped} unsupported skipped)` : "");
+  uploadList.prepend(row);
   const statusEl = row.querySelector(".fstatus");
 
   const fd = new FormData();
-  fd.append("file", file);
+  files.forEach(f => fd.append("files", f, f.name));
   try {
-    const r = await fetch(API + "/ingest", { method: "POST", body: fd });
+    const r = await fetch(`${API}/spaces/${state.spaceId}/files`, { method: "POST", body: fd });
     const data = await r.json();
     if (!r.ok) throw new Error(data.detail || "Upload failed");
-    statusEl.className = "fstatus ok";
-    statusEl.textContent = `\u2713 stored ${data.chunks_stored} chunks`;
+    const results = data.results || [];
+    const ok = results.filter(x => x.status === "ok").length;
+    const errs = results.filter(x => x.status === "error");
+    statusEl.className = "fstatus" + (errs.length ? " err" : " ok");
+    statusEl.textContent = errs.length
+      ? `\u2717 ${ok} ok, ${errs.length} failed (${errs[0].error})`
+      : `\u2713 stored ${ok} file(s)`;
+    await selectSpace(state.spaceId);
+    switchTab("files");
   } catch (err) {
     statusEl.className = "fstatus err";
     statusEl.textContent = "\u2717 " + err.message;
   }
 }
 
-/* ---------- Chat ---------- */
+/* ---------- Chats ---------- */
+const chatList = document.getElementById("chatList");
 const chatScroll = document.getElementById("chatScroll");
 const chatInput = document.getElementById("chatInput");
 const sendBtn = document.getElementById("sendBtn");
-const emptyState = document.getElementById("emptyState");
 
-chatInput.addEventListener("input", () => {
-  chatInput.style.height = "auto";
-  chatInput.style.height = Math.min(chatInput.scrollHeight, 160) + "px";
+document.getElementById("newChatBtn").addEventListener("click", async () => {
+  if (!state.spaceId) return;
+  const r = await fetch(`${API}/spaces/${state.spaceId}/chats`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}),
+  });
+  const chat = await r.json();
+  await loadChats();
+  selectChat(chat.id);
 });
-chatInput.addEventListener("keydown", e => {
-  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
-});
-sendBtn.addEventListener("click", sendMessage);
+
+async function loadChats() {
+  let chats = [];
+  try {
+    const r = await fetch(`${API}/spaces/${state.spaceId}/chats`);
+    chats = (await r.json()).chats || [];
+  } catch {}
+  chatList.innerHTML = "";
+  if (!chats.length) { chatList.innerHTML = `<div class="muted-note">No chats yet.</div>`; return; }
+  for (const c of chats) {
+    const el = document.createElement("div");
+    el.className = "list-item" + (c.id === state.chatId ? " active" : "");
+    el.innerHTML = `<span class="li-name"></span><span class="del" title="Delete chat">&#10005;</span>`;
+    el.querySelector(".li-name").textContent = c.title;
+    el.addEventListener("click", e => { if (e.target.classList.contains("del")) return; selectChat(c.id); });
+    el.querySelector(".del").addEventListener("click", async e => {
+      e.stopPropagation();
+      await fetch(`${API}/spaces/${state.spaceId}/chats/${c.id}`, { method: "DELETE" });
+      if (state.chatId === c.id) { state.chatId = null; resetChatView(); }
+      loadChats();
+    });
+    chatList.appendChild(el);
+  }
+}
+
+function resetChatView() {
+  chatScroll.innerHTML = `<div class="empty-state" id="emptyState">
+    <div class="icon">&#128172;</div>
+    <div>Start a new chat to ask questions about this space.</div></div>`;
+}
+
+async function selectChat(id) {
+  state.chatId = id;
+  loadChats();
+  let chat;
+  try {
+    const r = await fetch(`${API}/spaces/${state.spaceId}/chats/${id}`);
+    chat = await r.json();
+  } catch { return; }
+  chatScroll.innerHTML = "";
+  if (!chat.messages || !chat.messages.length) { resetChatView(); }
+  for (const m of (chat.messages || [])) {
+    addBubble(m.role, m.content);
+    if (m.role === "assistant" && m.sources) renderSources(m.sources);
+  }
+}
 
 function addBubble(role, text) {
-  if (emptyState) emptyState.style.display = "none";
+  const empty = document.getElementById("emptyState");
+  if (empty) empty.remove();
   const wrap = document.createElement("div");
   wrap.className = "msg " + role;
   const bubble = document.createElement("div");
@@ -307,47 +512,55 @@ function addBubble(role, text) {
   return bubble;
 }
 
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-}
-
 function renderSources(sources) {
   if (!sources || !sources.length) return;
   const wrap = document.createElement("div");
   wrap.className = "sources";
   const cards = sources.map(s => {
-    const img = s.thumbnail
-      ? `<img src="data:image/jpeg;base64,${s.thumbnail}" alt="source" />`
-      : "";
-    return `<div class="source-card">
-      ${img}
+    const img = s.thumbnail ? `<img src="data:image/jpeg;base64,${s.thumbnail}" alt="source" />` : "";
+    return `<div class="source-card">${img}
       <div class="meta">
         <div class="fn">${escapeHtml(s.filename)}</div>
         <div class="pg">page ${escapeHtml(s.page)}</div>
         <span class="badge">${escapeHtml(s.modality)}</span>
-      </div>
-    </div>`;
+      </div></div>`;
   }).join("");
   wrap.innerHTML = `<details class="sources-panel">
     <summary>&#9656; Sources (${sources.length})</summary>
-    <div class="source-grid">${cards}</div>
-  </details>`;
+    <div class="source-grid">${cards}</div></details>`;
   chatScroll.appendChild(wrap);
   chatScroll.scrollTop = chatScroll.scrollHeight;
 }
 
-let streaming = false;
+chatInput.addEventListener("input", () => {
+  chatInput.style.height = "auto";
+  chatInput.style.height = Math.min(chatInput.scrollHeight, 160) + "px";
+});
+chatInput.addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+});
+sendBtn.addEventListener("click", sendMessage);
 
 async function sendMessage() {
   const query = chatInput.value.trim();
-  if (!query || streaming) return;
+  if (!query || state.streaming || !state.spaceId) return;
+
+  // Auto-create a chat if none is active.
+  if (!state.chatId) {
+    const r = await fetch(`${API}/spaces/${state.spaceId}/chats`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}),
+    });
+    state.chatId = (await r.json()).id;
+    await loadChats();
+  }
 
   addBubble("user", query);
   chatInput.value = "";
   chatInput.style.height = "auto";
 
-  streaming = true;
+  state.streaming = true;
   sendBtn.disabled = true;
+  chatInput.disabled = true;
 
   const bubble = addBubble("assistant", "");
   const cursor = document.createElement("span");
@@ -355,12 +568,12 @@ async function sendMessage() {
   bubble.appendChild(cursor);
 
   let answer = "";
+  let pendingSources = null;
 
   try {
     const resp = await fetch(API + "/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query }),
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ space_id: state.spaceId, chat_id: state.chatId, query }),
     });
     if (!resp.ok || !resp.body) throw new Error("Request failed (" + resp.status + ")");
 
@@ -372,39 +585,41 @@ async function sendMessage() {
       const { value, done } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
-
       const events = buffer.split("\n\n");
-      buffer = events.pop();  // keep incomplete tail
-
+      buffer = events.pop();
       for (const evt of events) {
         const line = evt.split("\n").find(l => l.startsWith("data:"));
         if (!line) continue;
         let data;
         try { data = JSON.parse(line.slice(5).trim()); } catch { continue; }
-
         if (data.type === "token") {
           answer += data.text;
           bubble.textContent = answer;
           bubble.appendChild(cursor);
           chatScroll.scrollTop = chatScroll.scrollHeight;
         } else if (data.type === "sources") {
-          bubble.dataset.sources = JSON.stringify(data.sources);
+          pendingSources = data.sources;
         } else if (data.type === "done") {
           cursor.remove();
         }
       }
     }
     cursor.remove();
-    if (bubble.dataset.sources) renderSources(JSON.parse(bubble.dataset.sources));
+    if (pendingSources) renderSources(pendingSources);
+    loadChats();  // refresh title/order after first message
   } catch (err) {
     cursor.remove();
     bubble.textContent = (answer ? answer + "\n\n" : "") + "[Error] " + err.message;
   } finally {
-    streaming = false;
+    state.streaming = false;
     sendBtn.disabled = false;
+    chatInput.disabled = false;
     chatInput.focus();
   }
 }
+
+/* ---------- Init ---------- */
+loadSpaces();
 </script>
 </body>
 </html>

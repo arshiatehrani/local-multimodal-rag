@@ -4,6 +4,9 @@ models/
 # Qdrant persistent storage
 qdrant_data/
 
+# User data: uploaded files, per-space media, and saved chats
+spaces/
+
 # Python
 __pycache__/
 *.py[cod]

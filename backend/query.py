@@ -1,6 +1,10 @@
-"""Query pipeline: embed -> vector search -> rerank -> generate (SSE stream)."""
+"""Query pipeline: embed -> vector search -> rerank -> generate.
 
-import json
+``run_query`` is an async generator yielding structured event dicts
+(``{"type": "sources"|"token"|"done", ...}``). The HTTP layer (main.py) turns
+these into SSE and also persists the assistant message.
+"""
+
 from threading import Thread
 
 import numpy as np
@@ -15,25 +19,21 @@ TOP_K_FINAL = 5
 MAX_NEW_TOKENS = 1024
 
 
-def _sse(payload: dict) -> str:
-    return f"data: {json.dumps(payload)}\n\n"
-
-
 def _doc_text_for_rerank(pay: dict) -> str:
     if pay.get("modality") == "text":
         return pay.get("text", "")
     return f"[{pay.get('modality', 'image')}] {pay.get('filename', '')} page {pay.get('page', '')}"
 
 
-async def run_query(user_query: str):
-    """Async generator yielding SSE-formatted strings for the chat stream."""
+async def run_query(user_query: str, space_id: str):
+    """Async generator yielding event dicts for the chat stream, scoped to a space."""
 
-    # 0) Fast path: if nothing is ingested, answer instantly WITHOUT loading the
-    # embedder (a model load can take tens of seconds on first use).
-    if count_points() == 0:
-        yield _sse({"type": "sources", "sources": []})
-        yield _sse({"type": "token", "text": "I don't have any ingested documents yet. Upload files in the Ingest tab first."})
-        yield _sse({"type": "done"})
+    # 0) Fast path: if this space has nothing ingested, answer instantly WITHOUT
+    # loading the embedder (a model load can take tens of seconds on first use).
+    if count_points(space_id) == 0:
+        yield {"type": "sources", "sources": []}
+        yield {"type": "token", "text": "This space has no ingested documents yet. Add files in the Ingest tab first."}
+        yield {"type": "done"}
         return
 
     # 1) Embed the query.
@@ -44,13 +44,13 @@ async def run_query(user_query: str):
             normalize_embeddings=True,
         )[0]
 
-    # 2) Vector search.
-    hits = search(q_vec, top_k=TOP_K_RETRIEVE)
+    # 2) Vector search (within this space only).
+    hits = search(q_vec, space_id=space_id, top_k=TOP_K_RETRIEVE)
 
     if not hits:
-        yield _sse({"type": "sources", "sources": []})
-        yield _sse({"type": "token", "text": "I don't have any ingested documents yet. Upload files in the Ingest tab first."})
-        yield _sse({"type": "done"})
+        yield {"type": "sources", "sources": []}
+        yield {"type": "token", "text": "I couldn't find anything relevant in this space."}
+        yield {"type": "done"}
         return
 
     # 3) Rerank.
@@ -74,10 +74,12 @@ async def run_query(user_query: str):
                 f"[SOURCE: {pay.get('filename')} p.{pay.get('page')} - {pay.get('modality')}]"
             )
         sources.append({
+            "file_id": pay.get("file_id", ""),
             "filename": pay.get("filename", ""),
             "page": pay.get("page", ""),
             "modality": pay.get("modality", ""),
             "thumbnail": pay.get("thumbnail_b64", ""),
+            "text": pay.get("text", ""),
         })
     context_str = "\n\n---\n\n".join(context_parts)
 
@@ -119,11 +121,11 @@ async def run_query(user_query: str):
         thread.start()
 
         # Send sources first.
-        yield _sse({"type": "sources", "sources": sources})
+        yield {"type": "sources", "sources": sources}
 
         for token in streamer:
             if token:
-                yield _sse({"type": "token", "text": token})
+                yield {"type": "token", "text": token}
 
         thread.join()
-        yield _sse({"type": "done"})
+        yield {"type": "done"}
