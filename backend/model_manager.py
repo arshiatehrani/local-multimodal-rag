@@ -1,14 +1,15 @@
-"""Resident model manager with per-model quantization (Option A).
+"""VRAM-aware warm-cache model manager with per-model quantization.
 
-All three models (embedder / reranker / generator), quantized to NF4 4-bit, are
-kept resident in VRAM at the same time (~5 GB total on a 6 GB card). Each is
-loaded at most once -- eagerly via ``preload_all()`` at startup, or lazily on
-first use -- which removes the per-query load/evict latency of the old hot-swap
-design. An asyncio.Lock serialises GPU work so two heavy operations never spike
-VRAM concurrently. On error a single model is evicted and reloaded on next use.
+Models are loaded on demand and **kept resident** once loaded (no swap between
+embed / rerank / generate in later queries). Startup only preloads the embedder
+in the background — loading all three at once can OOM on 6 GB cards because each
+``from_pretrained`` needs a temporary VRAM spike on top of models already resident.
 
-Quantization is configured PER MODEL via the ``PRECISION`` dict below. Change a
-single entry to switch how that one model is loaded.
+If a 4-bit load fails on CUDA we **do not** silently fall back to fp16 (one fp16
+2B model alone is ~4 GB and makes multi-model residency impossible). An
+``asyncio.Lock`` serialises GPU work across requests.
+
+Quantization is configured PER MODEL via the ``PRECISION`` dict below.
 """
 
 import os
@@ -18,18 +19,8 @@ import asyncio
 import warnings
 import traceback
 
-# Reduce CUDA fragmentation OOMs on small GPUs. Must be set before the CUDA
-# caching allocator initialises (i.e. before the first GPU allocation).
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
-# NOTE: torch / sentence_transformers / transformers are imported LAZILY inside
-# the loader functions (not at module top-level). Importing them eagerly adds
-# 30-60s to server startup; deferring it lets the API come online in ~1-2s and
-# the first model request pays the import cost (already in a worker thread).
-
-# Resolve model paths relative to the project root (the parent of backend/), so
-# the app works no matter which directory uvicorn is launched from. Override the
-# location with the MODELS_DIR environment variable if needed.
 _BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(_BACKEND_DIR)
 MODELS_DIR = os.environ.get("MODELS_DIR", os.path.join(_PROJECT_ROOT, "models"))
@@ -38,37 +29,27 @@ EMBEDDER_PATH = os.path.join(MODELS_DIR, "Qwen3-VL-Embedding-2B")
 RERANKER_PATH = os.path.join(MODELS_DIR, "Qwen3-VL-Reranker-2B")
 GENERATOR_PATH = os.path.join(MODELS_DIR, "Qwen3-VL-2B-Instruct")
 
+# Stop background warmup after this model (safest on 6 GB). Set PRELOAD_MODELS=all
+# to attempt all three (may OOM). Values: embedder | all | none
+PRELOAD_MODELS = os.environ.get("PRELOAD_MODELS", "embedder").lower()
+
+# After a single 4-bit model loads, used VRAM should stay below this (GB).
+_SINGLE_MODEL_VRAM_WARN_GB = float(os.environ.get("SINGLE_MODEL_VRAM_WARN_GB", "2.5"))
+# Need at least this much free before attempting another load while others resident.
+_LOAD_HEADROOM_GB = float(os.environ.get("LOAD_HEADROOM_GB", "1.8"))
+
+
 def _device() -> str:
-    """Resolve the compute device lazily (imports torch on first call)."""
     import torch
     return "cuda" if torch.cuda.is_available() else "cpu"
 
-# ---------------------------------------------------------------------------
-# PER-MODEL PRECISION  --  edit these to control quantization independently.
-#
-# Accepted values:
-#   "8bit"  -> Q8 / INT8 weight quantization (bitsandbytes)   [default]
-#   "4bit"  -> NF4 4-bit weight quantization (bitsandbytes)
-#   "bf16"  -> bfloat16
-#   "fp16"  -> float16
-#   "fp32"  -> float32
-#
-# "8bit"/"4bit" require an NVIDIA GPU + the `bitsandbytes` package. On CPU they
-# fall back to float32 automatically.
-# ---------------------------------------------------------------------------
-# NOTE on small GPUs (e.g. 6 GB GTX 1660 Ti): three 2B multimodal models do NOT
-# fit in fp16 (~4.2 GB weights each + CUDA overhead -> OOM during inference).
-# 4-bit (NF4) shrinks each model to ~1.3 GB, which fits comfortably and leaves
-# room for activations. If a 4-bit load fails on your card, the loader falls
-# back to fp16 automatically (see _load_sentence_model / _load_generator).
+
 PRECISION = {
     "embedder": "4bit",
     "reranker": "4bit",
     "generator": "4bit",
 }
 
-# Map precision aliases -> torch dtype attribute names (resolved lazily so we
-# don't import torch at module load time).
 _DTYPE_NAMES = {
     "bf16": "bfloat16", "bfloat16": "bfloat16",
     "fp16": "float16", "float16": "float16", "half": "float16",
@@ -84,11 +65,6 @@ def _resolve_dtype(name: str):
 
 
 def _best_float_dtype():
-    """Best 16-bit dtype for this device.
-
-    Ampere+ GPUs support bfloat16; older cards (e.g. Turing GTX 16xx / RTX 20xx)
-    do not, so we use float16 there. CPU stays float32.
-    """
     import torch
     if _device() != "cuda":
         return torch.float32
@@ -104,8 +80,46 @@ def _is_quant(precision: str) -> bool:
     return precision.lower() in (_EIGHT_BIT | _FOUR_BIT)
 
 
+def _compact_vram() -> None:
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+    except Exception:
+        pass
+
+
+def _vram_gb():
+    """Return (used_gb, free_gb, total_gb). All zero if no CUDA."""
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return 0.0, 0.0, 0.0
+        free, total = torch.cuda.mem_get_info()
+        used = total - free
+        return used / 1e9, free / 1e9, total / 1e9
+    except Exception:
+        return 0.0, 0.0, 0.0
+
+
+def _log_vram(label: str) -> None:
+    used, free, total = _vram_gb()
+    if total > 0:
+        print(f"[models] VRAM {label}: {used:.1f} GB used, {free:.1f} GB free / {total:.1f} GB", flush=True)
+
+
+def _is_oom(exc: BaseException) -> bool:
+    name = type(exc).__name__
+    if "OutOfMemory" in name or "out of memory" in str(exc).lower():
+        return True
+    if isinstance(exc, RuntimeError) and "CUDA" in str(exc):
+        return True
+    return False
+
+
 def _build_load_kwargs(precision: str) -> dict:
-    """Translate a precision label into transformers ``from_pretrained`` kwargs."""
     import torch
     p = precision.lower()
 
@@ -114,17 +128,9 @@ def _build_load_kwargs(precision: str) -> dict:
 
     if _is_quant(p):
         if _device() != "cuda":
-            warnings.warn(
-                f"Precision '{precision}' needs a CUDA GPU; using float32 on CPU."
-            )
+            warnings.warn(f"Precision '{precision}' needs CUDA; using float32 on CPU.")
             return {"torch_dtype": torch.float32}
-        try:
-            from transformers import BitsAndBytesConfig
-        except ImportError as e:  # pragma: no cover - depends on env
-            raise ImportError(
-                "8-bit/4-bit quantization requires `bitsandbytes`. "
-                "Install it with `pip install bitsandbytes`."
-            ) from e
+        from transformers import BitsAndBytesConfig
 
         if p in _EIGHT_BIT:
             qcfg = BitsAndBytesConfig(load_in_8bit=True)
@@ -133,10 +139,8 @@ def _build_load_kwargs(precision: str) -> dict:
                 load_in_4bit=True,
                 bnb_4bit_quant_type="nf4",
                 bnb_4bit_use_double_quant=True,
-                # bf16 on Ampere+, fp16 on older GPUs (Turing GTX 16xx etc.).
                 bnb_4bit_compute_dtype=_best_float_dtype(),
             )
-        # device_map lets accelerate place the quantized weights on the GPU.
         return {"quantization_config": qcfg, "device_map": "auto"}
 
     if p in _DTYPE_NAMES:
@@ -147,11 +151,6 @@ def _build_load_kwargs(precision: str) -> dict:
 
 
 def _load_generator_cls():
-    """Import the correct generation class for Qwen3-VL.
-
-    transformers>=4.57 ships ``Qwen3VLForConditionalGeneration``. Fall back to
-    the auto class on older builds.
-    """
     try:
         from transformers import Qwen3VLForConditionalGeneration
         return Qwen3VLForConditionalGeneration
@@ -161,16 +160,9 @@ def _load_generator_cls():
 
 
 class ModelManager:
-    """Singleton that keeps ALL models resident in VRAM (Option A).
+    """Load-once warm cache: models stay in VRAM after first use, no hot-swap."""
 
-    The three 2B models, quantized to NF4 4-bit, fit together in ~5 GB, so we
-    load each one once and keep it warm for the lifetime of the process. This
-    eliminates the per-query load/evict overhead of the old hot-swap design.
-
-    A single ``asyncio.Lock`` still serialises GPU work so two heavy operations
-    (e.g. an ingest embed pass and a chat generation) never overlap and spike
-    VRAM at the same time. Loads happen at most once per model, under the lock.
-    """
+    _ORDER = ("embedder", "reranker", "generator")
 
     def __init__(self):
         self._models: dict = {}
@@ -183,57 +175,114 @@ class ModelManager:
         }
 
     def status(self) -> dict:
-        """Report which models are currently resident (for UI warmup display)."""
-        names = ("embedder", "reranker", "generator")
-        loaded = {n: (n in self._models) for n in names}
+        loaded = {n: (n in self._models) for n in self._ORDER}
+        used, free, total = _vram_gb()
         return {
             "loaded": loaded,
             "ready": all(loaded.values()),
             "count": sum(loaded.values()),
-            "total": len(names),
+            "total": len(self._ORDER),
             "errors": dict(self._errors),
+            "vram_gb": {"used": round(used, 2), "free": round(free, 2), "total": round(total, 2)},
+            "warmup_mode": PRELOAD_MODELS,
         }
 
-    def _evict_one(self, name: str):
-        """Drop a single model and free its VRAM. Caller must hold the lock.
-
-        Used only as a recovery path (e.g. after a CUDA OOM) so the next request
-        reloads it from a clean slate; the other resident models stay warm.
-        """
+    def _evict_one(self, name: str) -> None:
         if name in self._models:
+            print(f"[models] evicting {name} to free VRAM", flush=True)
             del self._models[name]
-            gc.collect()
-            try:
-                import torch
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            except Exception:
-                pass
+            _compact_vram()
+
+    def _evict_all_except(self, keep: str | None) -> None:
+        for name in list(self._models.keys()):
+            if name != keep:
+                self._evict_one(name)
+
+    async def _load_one(self, name: str, *, evict_others_on_retry: bool = True) -> None:
+        """Load a single model under the lock. Caller must hold ``self._lock``."""
+        if name in self._models:
+            return
+
+        loader = self._loaders[name]
+        _compact_vram()
+        used_before, free_before, _ = _vram_gb()
+        print(
+            f"[models] loading {name} ... ({len(self._models)} already resident, "
+            f"{free_before:.1f} GB free)",
+            flush=True,
+        )
+        t0 = time.time()
+
+        try:
+            self._models[name] = await asyncio.to_thread(loader)
+            self._errors.pop(name, None)
+        except Exception as e:
+            if evict_others_on_retry and self._models and _is_oom(e):
+                print(
+                    f"[models] OOM loading {name} with others resident — "
+                    "evicting them and retrying once",
+                    flush=True,
+                )
+                self._evict_all_except(None)
+                _compact_vram()
+                self._models[name] = await asyncio.to_thread(loader)
+                self._errors.pop(name, None)
+            else:
+                raise
+
+        elapsed = time.time() - t0
+        print(f"[models] loaded {name} in {elapsed:.1f}s", flush=True)
+        _log_vram(f"after {name}")
+
+        used_after, _, _ = _vram_gb()
+        delta = used_after - used_before
+        if delta > _SINGLE_MODEL_VRAM_WARN_GB and _device() == "cuda":
+            msg = (
+                f"{name} added ~{delta:.1f} GB VRAM (now {used_after:.1f} GB total). "
+                f"Expected ~1.3 GB for 4-bit — quantization may have failed."
+            )
+            print(f"[models] WARNING: {msg}", flush=True)
+            self._errors[name] = msg
 
     async def preload_all(self):
-        """Load every model once, sequentially, under the lock.
+        """Background warmup at startup. Default: embedder only (safe on 6 GB)."""
+        if PRELOAD_MODELS == "none":
+            print("[models] warmup skipped (PRELOAD_MODELS=none)", flush=True)
+            return
 
-        Kicked off as a background task at startup so the API is reachable
-        immediately while the GPU warms up. Failures are logged, not fatal.
-        """
-        print("[models] warmup started", flush=True)
-        for name in ("embedder", "reranker", "generator"):
+        targets = list(self._ORDER) if PRELOAD_MODELS == "all" else ["embedder"]
+        print(f"[models] warmup started (targets: {', '.join(targets)})", flush=True)
+
+        for name in targets:
             async with self._lock:
                 if name in self._models:
                     continue
-                print(f"[models] loading {name} ...", flush=True)
-                t0 = time.time()
                 try:
-                    self._models[name] = await asyncio.to_thread(self._loaders[name])
-                    self._errors.pop(name, None)
-                    print(f"[models] loaded {name} in {time.time() - t0:.1f}s", flush=True)
-                except Exception as e:  # pragma: no cover - depends on env
+                    await self._load_one(name)
+                except Exception as e:
                     self._errors[name] = repr(e)
                     print(f"[models] FAILED to load {name}: {e!r}", flush=True)
                     traceback.print_exc()
-        print(f"[models] warmup finished: {self.status()['count']}/3 loaded", flush=True)
+                    break
 
-    # --- public async context managers (use with `async with await manager.x()`) ---
+                used, free, _ = _vram_gb()
+                if used > _SINGLE_MODEL_VRAM_WARN_GB:
+                    print(
+                        f"[models] stopping warmup early — {used:.1f} GB used after "
+                        f"{name} (likely not 4-bit). Remaining models load on first use.",
+                        flush=True,
+                    )
+                    break
+                if free < _LOAD_HEADROOM_GB and name != targets[-1]:
+                    print(
+                        f"[models] stopping warmup early — only {free:.1f} GB free "
+                        f"(need {_LOAD_HEADROOM_GB} GB headroom for next load).",
+                        flush=True,
+                    )
+                    break
+
+        st = self.status()
+        print(f"[models] warmup finished: {st['count']}/{st['total']} loaded", flush=True)
 
     async def embedder(self):
         return _ModelContext(self, "embedder")
@@ -244,16 +293,11 @@ class ModelManager:
     async def generator(self):
         return _ModelContext(self, "generator")
 
-    # --- private loaders ---
-
     @staticmethod
     def _load_sentence_model(cls, path, role):
-        """Load a SentenceTransformer / CrossEncoder honouring PRECISION[role]."""
         precision = PRECISION.get(role, "bf16")
         load_kwargs = _build_load_kwargs(precision)
         quantized = "quantization_config" in load_kwargs
-        # When quantized, accelerate places weights via device_map; passing an
-        # explicit device on top would double-place, so leave it to the library.
         device = None if quantized else _device()
         try:
             return cls(
@@ -262,17 +306,18 @@ class ModelManager:
                 trust_remote_code=True,
                 model_kwargs=load_kwargs,
             )
-        except Exception as e:  # pragma: no cover - depends on env
+        except Exception as e:
+            if quantized and _device() == "cuda":
+                raise RuntimeError(
+                    f"{role}: {precision} load failed ({e}). "
+                    "fp16 fallback is disabled on GPU because it prevents keeping "
+                    "multiple models resident on 6 GB cards. "
+                    "Check bitsandbytes/CUDA, or fix PRECISION for this model."
+                ) from e
             if quantized:
-                warnings.warn(
-                    f"{role}: '{precision}' load failed ({e}); falling back to fp16/fp32."
-                )
-                return cls(
-                    path,
-                    device=_device(),
-                    trust_remote_code=True,
-                    model_kwargs=_build_load_kwargs("auto"),
-                )
+                warnings.warn(f"{role}: '{precision}' load failed ({e}); using float32 on CPU.")
+                return cls(path, device=_device(), trust_remote_code=True,
+                           model_kwargs=_build_load_kwargs("auto"))
             raise
 
     def _load_embedder(self):
@@ -288,28 +333,28 @@ class ModelManager:
 
         processor = AutoProcessor.from_pretrained(GENERATOR_PATH, trust_remote_code=True)
         model_cls = _load_generator_cls()
-
         precision = PRECISION.get("generator", "bf16")
         load_kwargs = dict(_build_load_kwargs(precision))
         load_kwargs["trust_remote_code"] = True
-        # bf16/fp16/fp32 paths need an explicit device_map; the quant path
-        # already supplies device_map="auto".
         load_kwargs.setdefault("device_map", _device())
+        quantized = "quantization_config" in load_kwargs
 
-        # Try flash-attention-2 first (faster), then without it. flash_attention_2
-        # is optional and frequently unavailable on Windows.
         model = None
+        last_err = None
         for extra in ({"attn_implementation": "flash_attention_2"}, {}):
             try:
                 model = model_cls.from_pretrained(GENERATOR_PATH, **load_kwargs, **extra)
                 break
-            except Exception:
+            except Exception as e:
+                last_err = e
                 continue
 
-        if model is None:  # pragma: no cover - depends on env
-            warnings.warn(
-                f"generator: '{precision}' load failed; falling back to fp16/fp32."
-            )
+        if model is None:
+            if quantized and _device() == "cuda":
+                raise RuntimeError(
+                    f"generator: {precision} load failed ({last_err}). "
+                    "fp16 fallback disabled on GPU (see model_manager.py)."
+                ) from last_err
             fb = dict(_build_load_kwargs("auto"))
             fb["trust_remote_code"] = True
             fb.setdefault("device_map", _device())
@@ -320,14 +365,6 @@ class ModelManager:
 
 
 class _ModelContext:
-    """Async context manager: acquire the GPU lock, ensure the model is loaded
-    (once), yield it, then release the lock.
-
-    Models are kept resident, so the load only happens the first time (or after a
-    recovery eviction). The lock is held for the duration of the operation so GPU
-    work is serialised across requests.
-    """
-
     def __init__(self, manager: "ModelManager", name: str):
         self._manager = manager
         self._name = name
@@ -335,21 +372,14 @@ class _ModelContext:
     async def __aenter__(self):
         await self._manager._lock.acquire()
         try:
-            if self._name not in self._manager._models:
-                # Run the (slow, blocking) load in a worker thread so the asyncio
-                # event loop stays responsive (e.g. /health keeps answering and
-                # client connections don't drop while a model loads).
-                loader = self._manager._loaders[self._name]
-                self._manager._models[self._name] = await asyncio.to_thread(loader)
-        except Exception:
+            await self._manager._load_one(self._name)
+        except Exception as e:
+            self._manager._errors[self._name] = repr(e)
             self._manager._lock.release()
             raise
         return self._manager._models[self._name]
 
     async def __aexit__(self, exc_type, exc, tb):
-        # On error (e.g. CUDA OOM) this model may be in a bad state / VRAM may be
-        # fragmented. Evict just this one so the NEXT request reloads it cleanly,
-        # while the other resident models stay warm.
         try:
             if exc_type is not None:
                 self._manager._evict_one(self._name)
@@ -358,5 +388,4 @@ class _ModelContext:
         return False
 
 
-# Global singleton
 manager = ModelManager()

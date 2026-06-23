@@ -321,8 +321,10 @@ async function checkHealth() {
         modelsReady = s.ready;
         const nErr = s.errors ? Object.keys(s.errors).length : 0;
         if (s.ready) txt.textContent = "models ready";
-        else if (nErr) txt.textContent = `model load error (${nErr}) - see terminal`;
-        else txt.textContent = `loading models ${s.count}/${s.total}...`;
+        else if (nErr) txt.textContent = `load error (${nErr}) - see terminal`;
+        else if (s.count === 0) txt.textContent = "warming embedder...";
+        else if (s.count < s.total) txt.textContent = `${s.count}/${s.total} ready (more on first chat)`;
+        else txt.textContent = "models ready";
       } catch { txt.textContent = "backend online"; }
     } else {
       txt.textContent = "models ready";

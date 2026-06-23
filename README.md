@@ -10,8 +10,10 @@ Everything is organized into **Spaces** (projects): each space has its own files
 its own isolated vector search, its own saved chats, and its own editable system
 prompt. There is also a reusable **prompt library** shared across spaces.
 
-All three models are kept **resident in VRAM at once** (NF4 4-bit, ~5 GB total on
-a 6 GB card) and are warmed up at startup, so there is no per-query load latency:
+All three models are kept **warm in VRAM after first use** (no reload on later
+queries). At startup only the **embedder** is preloaded in the background — loading
+all three at once can OOM on 6 GB GPUs during the temporary load spike. The reranker
+and generator load on the first chat and then stay resident:
 
 | Role       | Model                  | HF ID                        | Default precision |
 |------------|------------------------|------------------------------|-------------------|
@@ -307,11 +309,13 @@ downscales large images to a max dimension of 1024 px before embedding
 - **Empty-space fast path**: if a space has no vectors yet, chat answers instantly
   without loading any model.
 - **Embedding dim**: 2048 (must match the Qdrant collection in `qdrant_store.py`).
-- **Model warmup**: all models load once at startup in a background task, so the
-  API is reachable immediately and the GPU warms up while the page opens. Progress
-  is exposed at `GET /models/status` and shown in the sidebar status pill
-  ("loading models N/3" -> "models ready"). After warmup there is **no per-query
-  load latency**. A single lock still serialises GPU work so ingest and chat never
-  spike VRAM at the same time.
+- **Model warmup**: at startup the **embedder** preloads in the background
+  (`PRELOAD_MODELS=embedder`, default). Set `PRELOAD_MODELS=all` to attempt all
+  three (may OOM on 6 GB). Progress is at `GET /models/status`; the sidebar shows
+  `warming embedder...` then `1/3 ready (more on first chat)`. After the first full
+  chat, all three are warm with **no per-query reload**. If a 4-bit load fails,
+  fp16 fallback is **disabled on GPU** (one fp16 model alone is ~4 GB and caused
+  process crashes when loading a second). Check the backend terminal for
+  `[models]` lines and VRAM warnings.
 - **Reset everything**: `stop.bat`, then delete `./qdrant_data` (vectors) and
   `./spaces` (files + chats). Delete `./prompts` to clear the prompt library.

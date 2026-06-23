@@ -24,9 +24,8 @@ from model_manager import manager
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     ensure_collection()
-    # Start loading all models onto the GPU in the background. This returns
-    # immediately so /health responds right away (the launcher opens the browser
-    # as soon as it does), while the models warm up concurrently with the page.
+    # Warm up the embedder in the background (safe on 6 GB). Loading all three at
+    # startup can OOM; set PRELOAD_MODELS=all to try. /health returns immediately.
     app.state.warmup_task = asyncio.create_task(manager.preload_all())
     yield
     task = getattr(app.state, "warmup_task", None)
