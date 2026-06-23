@@ -223,6 +223,47 @@ def _load_generator_cls():
         return AutoModelForImageTextToText
 
 
+class _WeightLoadProgress:
+    """Patch tqdm during ``from_pretrained`` so the UI tracks real weight shards."""
+
+    _FAKE_CAP = 12  # time-based filler never exceeds this before weights start
+
+    def __init__(self, on_progress):
+        self._on_progress = on_progress
+        self._orig_tqdm = None
+
+    def __enter__(self):
+        import tqdm
+        import tqdm.std
+
+        orig = tqdm.std.tqdm
+        hook = self
+
+        class ReportingTqdm(orig):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                if self.total and self.total > 1:
+                    hook._on_progress(int(self.n), int(self.total))
+
+            def update(self, n=1):
+                super().update(n)
+                if self.total and self.total > 1:
+                    hook._on_progress(int(self.n), int(self.total))
+
+        self._orig_tqdm = orig
+        tqdm.std.tqdm = ReportingTqdm
+        tqdm.tqdm = ReportingTqdm
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if self._orig_tqdm:
+            import tqdm
+            import tqdm.std
+            tqdm.std.tqdm = self._orig_tqdm
+            tqdm.tqdm = self._orig_tqdm
+        return False
+
+
 class ModelManager:
     """Load-once warm cache: models stay in VRAM after first use, no hot-swap."""
 
@@ -247,6 +288,14 @@ class ModelManager:
         if self._loading is not None:
             self._loading["pct"] = min(99, max(0, int(pct)))
 
+    def _set_weight_progress(self, current: int, total: int) -> None:
+        if self._loading is None or total <= 0:
+            return
+        self._loading["step"] = "weights"
+        self._loading["current"] = min(current, total)
+        self._loading["total"] = total
+        self._set_loading_pct(int(100 * current / total))
+
     def _estimate_load_seconds(self, name: str) -> float:
         if name in self._load_durations:
             return self._load_durations[name]
@@ -258,9 +307,18 @@ class ModelManager:
         est = self._estimate_load_seconds(name)
         t0 = time.time()
         while not done.is_set():
+            if self._loading and self._loading.get("total", 0) > 0:
+                # Real weight-shard progress drives the bar once loading starts.
+                try:
+                    await asyncio.wait_for(done.wait(), timeout=0.35)
+                except asyncio.TimeoutError:
+                    pass
+                continue
             elapsed = time.time() - t0
-            # Smooth curve: approaches 99% asymptotically so we never hit 100% before done.
-            pct = min(99, int(100 * (1.0 - pow(2.718281828, -elapsed / max(est * 0.85, 1)))))
+            pct = min(
+                _WeightLoadProgress._FAKE_CAP,
+                int(100 * (1.0 - pow(2.718281828, -elapsed / max(est * 0.85, 1)))),
+            )
             self._set_loading_pct(pct)
             try:
                 await asyncio.wait_for(done.wait(), timeout=0.35)
@@ -269,7 +327,7 @@ class ModelManager:
         self._set_loading_pct(100)
 
     def _start_load_progress(self, name: str) -> asyncio.Event:
-        self._loading = {"name": name, "pct": 0}
+        self._loading = {"name": name, "pct": 0, "step": None, "current": 0, "total": 0}
         done = asyncio.Event()
         self._progress_done = done
         self._progress_task = asyncio.create_task(self._progress_ticker(name, done))
@@ -351,8 +409,12 @@ class ModelManager:
         t0 = time.time()
         progress_done = self._start_load_progress(name)
 
+        def _run_loader():
+            with _WeightLoadProgress(self._set_weight_progress):
+                return loader()
+
         try:
-            self._models[name] = await asyncio.to_thread(loader)
+            self._models[name] = await asyncio.to_thread(_run_loader)
             self._errors.pop(name, None)
         except Exception as e:
             if evict_others_on_retry and self._models and _is_oom(e):
@@ -365,7 +427,12 @@ class ModelManager:
                 _compact_vram()
                 await self._cancel_load_progress()
                 progress_done = self._start_load_progress(name)
-                self._models[name] = await asyncio.to_thread(loader)
+
+                def _run_loader_retry():
+                    with _WeightLoadProgress(self._set_weight_progress):
+                        return loader()
+
+                self._models[name] = await asyncio.to_thread(_run_loader_retry)
                 self._errors.pop(name, None)
             else:
                 await self._cancel_load_progress()
@@ -462,9 +529,7 @@ class ModelManager:
     def _load_generator(self):
         from transformers import AutoProcessor
 
-        self._set_loading_pct(8)
         processor = AutoProcessor.from_pretrained(GENERATOR_PATH, trust_remote_code=True)
-        self._set_loading_pct(22)
         model_cls = _load_generator_cls()
         precision = PRECISION.get("generator", "bf16")
         load_kwargs = dict(_build_load_kwargs(precision))
@@ -493,7 +558,6 @@ class ModelManager:
             fb.setdefault("device_map", _device())
             model = model_cls.from_pretrained(GENERATOR_PATH, **fb)
 
-        self._set_loading_pct(95)
         model.eval()
         return {"model": model, "processor": processor}
 

@@ -419,7 +419,7 @@ def list_chats(space_id: str) -> list:
     cdir = _chats_dir(space_id)
     if not os.path.isdir(cdir):
         return []
-    out = []
+    by_id: dict[str, dict] = {}
     for fn in os.listdir(cdir):
         if not fn.endswith(".json"):
             continue
@@ -428,15 +428,22 @@ def list_chats(space_id: str) -> list:
             data = _read_json(path)
         except (OSError, json.JSONDecodeError):
             continue
+        chat_id = data.get("id")
+        if not chat_id:
+            continue
         with _lock:
             path = _sync_chat_file(space_id, data, path)
             data = _read_json(path)
-        out.append({
-            "id": data.get("id"),
+        entry = {
+            "id": chat_id,
             "title": data.get("title", "New chat"),
             "created_at": data.get("created_at", ""),
             "updated_at": data.get("updated_at", ""),
-        })
+        }
+        prev = by_id.get(chat_id)
+        if prev is None or entry.get("updated_at", "") >= prev.get("updated_at", ""):
+            by_id[chat_id] = entry
+    out = list(by_id.values())
     out.sort(key=lambda c: c.get("updated_at", ""), reverse=True)
     return out
 

@@ -266,17 +266,43 @@
   .msg.assistant .bubble.status-hint { color: var(--text-dim); font-style: italic; }
   .msg.assistant .bubble.streaming { max-width: 80%; }
   .gemini-status-wrap {
-    display: flex; align-items: center; gap: 16px; padding: 14px 16px; min-height: 64px;
+    display: flex; flex-direction: column; align-items: stretch; gap: 12px;
+    padding: 16px 18px; min-height: 0;
     background: var(--status-bg); border: 1px solid var(--border); border-radius: 14px;
     backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
     transition: opacity .25s ease, max-height .35s ease, margin .35s ease, padding .35s ease;
   }
-  .gemini-status-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
-  .gemini-step-label {
-    font-size: 13px; font-weight: 500; color: var(--text); line-height: 1.45; letter-spacing: -0.01em;
+  .pipeline-steps {
+    display: flex; flex-direction: column; gap: 5px; width: 100%;
   }
+  .pipeline-step {
+    display: flex; align-items: center; gap: 10px;
+    font-size: 12.5px; line-height: 1.35; color: var(--text-dim);
+    opacity: 0.34; transition: opacity .28s ease, color .28s ease;
+  }
+  .pipeline-step.done {
+    opacity: 0.52; color: var(--text-dim);
+  }
+  .pipeline-step.active {
+    opacity: 1; color: var(--text); font-weight: 600;
+  }
+  .pipeline-step-dot {
+    width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+    background: color-mix(in srgb, var(--text-dim) 35%, transparent);
+    transition: background .28s ease, box-shadow .28s ease, transform .28s ease;
+  }
+  .pipeline-step.done .pipeline-step-dot {
+    background: var(--accent-dim);
+  }
+  .pipeline-step.active .pipeline-step-dot {
+    background: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+    transform: scale(1.15);
+  }
+  .pipeline-step-label { flex: 1; min-width: 0; }
   .pipeline-progress {
     width: 100%; height: 4px; border-radius: 999px; background: var(--border); overflow: hidden;
+    margin-top: 2px;
   }
   .pipeline-progress-fill {
     height: 100%; width: 0%; border-radius: inherit;
@@ -284,75 +310,35 @@
     transition: width .5s cubic-bezier(0.4, 0, 0.2, 1);
   }
   .gemini-loader {
-    width: 46px; height: 46px; position: relative; flex-shrink: 0;
+    display: flex; justify-content: center; align-items: center;
+    width: 100%; height: 22px; flex-shrink: 0; padding: 2px 0 4px;
   }
   .gemini-loader.gemini-inline {
-    width: 32px; height: 22px; display: inline-flex; vertical-align: middle;
-    margin-left: 4px; transform: scale(0.72); transform-origin: left center;
+    width: auto; height: 18px; display: inline-flex; vertical-align: middle;
+    margin-left: 6px; padding: 0;
   }
   .gemini-core {
-    width: 100%; height: 100%; position: relative;
-    animation: gemini-orbit 3.6s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite;
+    display: flex; align-items: flex-end; justify-content: center;
+    gap: 9px; width: auto; height: auto; position: relative;
   }
   .gemini-dot {
-    position: absolute; top: 50%; left: 50%;
-    width: 8px; height: 8px; border-radius: 50%; margin: -4px 0 0 -4px;
-    animation: gemini-dot-path 3.6s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite;
+    position: relative; top: auto; left: auto;
+    width: 7px; height: 7px; border-radius: 50%; margin: 0; flex-shrink: 0;
+    animation: gemini-bounce 1.35s ease-in-out infinite;
   }
-  .gemini-inline .gemini-dot { width: 6px; height: 6px; margin: -3px 0 0 -3px; }
-  .gemini-dot.d1 { background: var(--dot-1); --i: 0; animation-delay: 0s; }
-  .gemini-dot.d2 { background: var(--dot-2); --i: 1; animation-delay: -0.12s; }
-  .gemini-dot.d3 { background: var(--dot-3); --i: 2; animation-delay: -0.24s; }
-  .gemini-dot.d4 { background: var(--dot-4); --i: 3; animation-delay: -0.36s; }
-  @keyframes gemini-orbit {
-    0%, 18% { transform: rotate(0deg) scale(1); }
-    36% { transform: rotate(200deg) scale(1); }
-    50% { transform: rotate(360deg) scale(1.45); }
-    62% { transform: rotate(360deg) scale(0.72); }
-    74%, 100% { transform: rotate(360deg) scale(1); }
+  .gemini-inline .gemini-dot { width: 5px; height: 5px; }
+  .gemini-dot.d1 { background: var(--dot-1); animation-delay: 0s; }
+  .gemini-dot.d2 { background: var(--dot-2); animation-delay: -0.18s; }
+  .gemini-dot.d3 { background: var(--dot-3); animation-delay: -0.36s; }
+  .gemini-dot.d4 { background: var(--dot-4); animation-delay: -0.54s; }
+  @keyframes gemini-bounce {
+    0%, 55%, 100% { transform: translateY(0); opacity: 0.42; }
+    28% { transform: translateY(-7px); opacity: 1; }
   }
-  @keyframes gemini-dot-path {
-    0%, 18% {
-      transform: rotate(calc(var(--i) * 90deg)) translateY(-15px) scale(1);
-      opacity: 1;
-    }
-    36% {
-      transform: rotate(calc(var(--i) * 90deg + 180deg)) translateY(-15px) scale(1.05);
-    }
-    50% {
-      transform: rotate(calc(var(--i) * 90deg + 360deg)) translateY(-20px) scale(1.1);
-    }
-    62% {
-      transform: rotate(calc(var(--i) * 90deg + 360deg)) translateY(-8px) scale(0.75);
-    }
-    74% {
-      transform: translateX(calc(-10.5px + var(--i) * 7px)) translateY(0) rotate(0deg) scale(1);
-    }
-    82% {
-      transform: translateX(calc(-10.5px + var(--i) * 7px)) translateY(-7px) rotate(0deg) scale(1.15);
-    }
-    90% {
-      transform: translateX(calc(-10.5px + var(--i) * 7px)) translateY(2px) rotate(0deg) scale(0.95);
-    }
-    100% {
-      transform: rotate(calc(var(--i) * 90deg)) translateY(-15px) scale(1);
-    }
-  }
-  .gemini-inline .gemini-dot { animation-name: gemini-dot-path-inline; }
-  .gemini-inline .gemini-core { animation-name: gemini-orbit-inline; }
-  @keyframes gemini-orbit-inline {
-    0%, 18% { transform: rotate(0deg) scale(1); }
-    50% { transform: rotate(360deg) scale(1.3); }
-    62% { transform: rotate(360deg) scale(0.8); }
-    100% { transform: rotate(360deg) scale(1); }
-  }
-  @keyframes gemini-dot-path-inline {
-    0%, 18% { transform: rotate(calc(var(--i) * 90deg)) translateY(-10px) scale(1); }
-    50% { transform: rotate(calc(var(--i) * 90deg + 360deg)) translateY(-13px) scale(1.05); }
-    62% { transform: rotate(calc(var(--i) * 90deg + 360deg)) translateY(-6px) scale(0.8); }
-    74% { transform: translateX(calc(-7px + var(--i) * 4.5px)) translateY(0) rotate(0deg) scale(1); }
-    82% { transform: translateX(calc(-7px + var(--i) * 4.5px)) translateY(-4px) rotate(0deg) scale(1.1); }
-    100% { transform: rotate(calc(var(--i) * 90deg)) translateY(-10px) scale(1); }
+  .gemini-inline .gemini-dot { animation-name: gemini-bounce-inline; }
+  @keyframes gemini-bounce-inline {
+    0%, 55%, 100% { transform: translateY(0); opacity: 0.45; }
+    28% { transform: translateY(-4px); opacity: 1; }
   }
   .answer-stream {
     color: var(--text); white-space: pre-wrap; word-wrap: break-word;
@@ -809,17 +795,22 @@ function createStreamingBubble() {
   const loaderWrap = document.createElement("div");
   loaderWrap.className = "gemini-status-wrap";
   loaderWrap.appendChild(createGeminiLoader(false));
-  const statusBody = document.createElement("div");
-  statusBody.className = "gemini-status-body";
-  const stepLabel = document.createElement("div");
-  stepLabel.className = "gemini-step-label";
-  stepLabel.textContent = "Starting…";
+
+  const stepsEl = document.createElement("div");
+  stepsEl.className = "pipeline-steps";
+  for (const s of PIPELINE_STEPS) {
+    const row = document.createElement("div");
+    row.className = "pipeline-step pending";
+    row.dataset.step = s.step;
+    row.innerHTML = `<span class="pipeline-step-dot" aria-hidden="true"></span><span class="pipeline-step-label">${s.label}</span>`;
+    stepsEl.appendChild(row);
+  }
+  loaderWrap.appendChild(stepsEl);
+
   const progressTrack = document.createElement("div");
   progressTrack.className = "pipeline-progress";
   progressTrack.innerHTML = `<div class="pipeline-progress-fill"></div>`;
-  statusBody.appendChild(stepLabel);
-  statusBody.appendChild(progressTrack);
-  loaderWrap.appendChild(statusBody);
+  loaderWrap.appendChild(progressTrack);
 
   const answerEl = document.createElement("div");
   answerEl.className = "answer-stream";
@@ -836,31 +827,50 @@ function createStreamingBubble() {
   chatScroll.appendChild(wrap);
   chatScroll.scrollTop = chatScroll.scrollHeight;
   return {
-    bubble, loaderWrap, stepLabel, progressFill: progressTrack.querySelector(".pipeline-progress-fill"),
+    bubble, loaderWrap, stepsEl, progressFill: progressTrack.querySelector(".pipeline-progress-fill"),
     answerEl, answerText, streamLoader,
   };
 }
 
-function updatePipelineStep(_loaderWrap, step, text, _modeRef, stepLabelEl, progressFillEl) {
-  const label = stepLabelEl || _loaderWrap?.querySelector?.(".gemini-step-label");
+function updatePipelineStep(_loaderWrap, step, text, _modeRef, stepsEl, progressFillEl) {
+  const steps = stepsEl || _loaderWrap?.querySelector?.(".pipeline-steps");
   const fill = progressFillEl || _loaderWrap?.querySelector?.(".pipeline-progress-fill");
-  if (!label) return;
-  let msg = text || "";
+  if (!steps) return;
+
+  const activeIdx = PIPELINE_STEPS.findIndex(s => s.step === step);
   let pct = 8;
-  if (step) {
-    const found = PIPELINE_STEPS.find(s => s.step === step);
-    if (found) {
-      if (!msg) msg = found.label + "…";
-      pct = found.pct;
+
+  steps.querySelectorAll(".pipeline-step").forEach((el, i) => {
+    el.classList.remove("active", "done", "pending");
+    if (activeIdx < 0) el.classList.add("pending");
+    else if (i < activeIdx) el.classList.add("done");
+    else if (i === activeIdx) el.classList.add("active");
+    else el.classList.add("pending");
+  });
+
+  if (activeIdx >= 0) {
+    const found = PIPELINE_STEPS[activeIdx];
+    pct = found.pct;
+    const labelEl = steps.querySelector(`[data-step="${step}"] .pipeline-step-label`);
+    if (labelEl) {
+      const msg = (text || found.label).replace(/\u2026$|\.{3}$/, "");
+      labelEl.textContent = msg || found.label;
     }
   }
-  label.textContent = msg.replace(/\u2026$|\.{3}$/, "") || "Working…";
+
   if (fill) fill.style.width = pct + "%";
 }
 
-function finishPipelineSteps(progressFillEl) {
+function finishPipelineSteps(progressFillEl, stepsEl) {
   const fill = progressFillEl || document.querySelector(".bubble.streaming .pipeline-progress-fill");
+  const steps = stepsEl || document.querySelector(".bubble.streaming .pipeline-steps");
   if (fill) fill.style.width = "100%";
+  if (steps) {
+    steps.querySelectorAll(".pipeline-step").forEach(el => {
+      el.classList.remove("active", "pending");
+      el.classList.add("done");
+    });
+  }
 }
 function updateContextRing(data) {
   const ring = document.getElementById("contextRing");
@@ -900,7 +910,7 @@ let healthPollMs = 400;
 
 const MODEL_LABELS = { embedder: "Embedder", reranker: "Reranker", generator: "Generator" };
 
-function setLoadBars(overallPct, modelName, modelPct, count, total) {
+function setLoadBars(overallPct, modelName, modelPct, count, total, weightCurrent, weightTotal) {
   const overallBar = document.getElementById("loadBarOverall");
   const currentBar = document.getElementById("loadBarCurrent");
   const subRow = document.getElementById("loadSubRow");
@@ -918,9 +928,14 @@ function setLoadBars(overallPct, modelName, modelPct, count, total) {
   if (modelName) {
     subRow.style.display = "";
     nameEl.textContent = MODEL_LABELS[modelName] || modelName;
-    modelPctEl.textContent = current + "% · " + count + "/" + total;
+    const wTot = weightTotal ?? 0;
+    const wCur = weightCurrent ?? 0;
+    const detail = wTot > 0 ? (wCur + "/" + wTot) : (count + "/" + total);
+    modelPctEl.textContent = current + "% · " + detail;
     overallBar.parentElement.title = "Overall · " + count + " of " + total + " models ready";
-    currentBar.parentElement.title = (MODEL_LABELS[modelName] || modelName) + " loading";
+    currentBar.parentElement.title = wTot > 0
+      ? (MODEL_LABELS[modelName] || modelName) + " · weights " + wCur + "/" + wTot
+      : (MODEL_LABELS[modelName] || modelName) + " loading";
   } else {
     subRow.style.display = "none";
     overallBar.parentElement.title = "Loading models";
@@ -959,7 +974,7 @@ function updateLoadStatusUI(state, s) {
     const overall = s.overall_pct ?? 0;
     const modelName = s.loading?.name || (s.count === 0 ? "embedder" : null);
     const modelPct = s.loading?.pct ?? (s.count === 0 ? 0 : 100);
-    setLoadBars(overall, modelName, modelPct, s.count, s.total);
+    setLoadBars(overall, modelName, modelPct, s.count, s.total, s.loading?.current, s.loading?.total);
     return;
   }
   txt.textContent = "Backend online";
@@ -1514,6 +1529,7 @@ async function loadPrompts() {
 
 /* ---------- Chats ---------- */
 const chatList = document.getElementById("chatList");
+let loadChatsSeq = 0;
 const chatScroll = document.getElementById("chatScroll");
 const chatInput = document.getElementById("chatInput");
 const sendBtn = document.getElementById("sendBtn");
@@ -1535,11 +1551,14 @@ document.getElementById("newChatBtn").addEventListener("click", async () => {
 });
 
 async function loadChats() {
+  if (!state.spaceId) return;
+  const seq = ++loadChatsSeq;
   let chats = [];
   try {
     const r = await fetch(`${API}/spaces/${state.spaceId}/chats`);
     chats = (await r.json()).chats || [];
   } catch {}
+  if (seq !== loadChatsSeq) return;
   chatList.innerHTML = "";
   if (!chats.length) { chatList.innerHTML = `<div class="muted-note">No chats yet.</div>`; return; }
   for (const c of chats) {
@@ -1581,7 +1600,7 @@ function resetChatView() {
 
 async function selectChat(id) {
   state.chatId = id;
-  loadChats();
+  await loadChats();
   switchTab("chat");
   let chat;
   try {
@@ -2066,7 +2085,7 @@ async function sendMessage() {
   sendBtn.disabled = true;
   chatInput.disabled = true;
 
-  const { bubble, loaderWrap, stepLabel, progressFill, answerEl, answerText, streamLoader } = createStreamingBubble();
+  const { bubble, loaderWrap, stepsEl, progressFill, answerEl, answerText, streamLoader } = createStreamingBubble();
 
   let answer = "";
   let pendingSources = null;
@@ -2099,7 +2118,7 @@ async function sendMessage() {
         if (data.type === "token") {
           if (!answerStarted) {
             answerStarted = true;
-            finishPipelineSteps(progressFill);
+            finishPipelineSteps(progressFill, stepsEl);
             bubble.classList.add("answer-visible");
             streamLoader.style.display = "inline-flex";
           }
@@ -2107,7 +2126,7 @@ async function sendMessage() {
           answerText.textContent = answer;
           chatScroll.scrollTop = chatScroll.scrollHeight;
         } else if (data.type === "status") {
-          updatePipelineStep(loaderWrap, data.step, data.text, pipelineMode, stepLabel, progressFill);
+          updatePipelineStep(loaderWrap, data.step, data.text, pipelineMode, stepsEl, progressFill);
           chatScroll.scrollTop = chatScroll.scrollHeight;
         } else if (data.type === "context") {
           updateContextRing(data);
@@ -2115,7 +2134,7 @@ async function sendMessage() {
           pendingSources = data.sources;
           sourcesPanelEl = renderSources(pendingSources, sourcesPanelEl);
         } else if (data.type === "done") {
-          finishPipelineSteps(progressFill);
+          finishPipelineSteps(progressFill, stepsEl);
           bubble.classList.add("answer-visible");
           streamLoader.remove();
           answerEl.innerHTML = renderMarkdown(answer);
