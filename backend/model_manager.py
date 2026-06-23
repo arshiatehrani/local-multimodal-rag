@@ -38,6 +38,14 @@ _SINGLE_MODEL_VRAM_WARN_GB = float(os.environ.get("SINGLE_MODEL_VRAM_WARN_GB", "
 _LOAD_HEADROOM_GB = float(os.environ.get("LOAD_HEADROOM_GB", "1.8"))
 
 
+# Default expected load duration (seconds) until we calibrate from a prior run.
+_LOAD_EST_SEC = {
+    "embedder": 35,
+    "reranker": 40,
+    "generator": 55,
+}
+
+
 def _device() -> str:
     import torch
     return "cuda" if torch.cuda.is_available() else "cpu"
@@ -230,20 +238,91 @@ class ModelManager:
             "reranker": self._load_reranker,
             "generator": self._load_generator,
         }
+        self._loading: dict | None = None  # {name, pct} while a model is loading
+        self._load_durations: dict[str, float] = {}
+        self._progress_done: asyncio.Event | None = None
+        self._progress_task: asyncio.Task | None = None
+
+    def _set_loading_pct(self, pct: int) -> None:
+        if self._loading is not None:
+            self._loading["pct"] = min(99, max(0, int(pct)))
+
+    def _estimate_load_seconds(self, name: str) -> float:
+        if name in self._load_durations:
+            return self._load_durations[name]
+        if self._load_durations:
+            return sum(self._load_durations.values()) / len(self._load_durations)
+        return _LOAD_EST_SEC.get(name, 45)
+
+    async def _progress_ticker(self, name: str, done: asyncio.Event) -> None:
+        est = self._estimate_load_seconds(name)
+        t0 = time.time()
+        while not done.is_set():
+            elapsed = time.time() - t0
+            # Smooth curve: approaches 99% asymptotically so we never hit 100% before done.
+            pct = min(99, int(100 * (1.0 - pow(2.718281828, -elapsed / max(est * 0.85, 1)))))
+            self._set_loading_pct(pct)
+            try:
+                await asyncio.wait_for(done.wait(), timeout=0.35)
+            except asyncio.TimeoutError:
+                pass
+        self._set_loading_pct(100)
+
+    def _start_load_progress(self, name: str) -> asyncio.Event:
+        self._loading = {"name": name, "pct": 0}
+        done = asyncio.Event()
+        self._progress_done = done
+        self._progress_task = asyncio.create_task(self._progress_ticker(name, done))
+        return done
+
+    async def _finish_load_progress(self, done: asyncio.Event, name: str, elapsed: float) -> None:
+        self._load_durations[name] = elapsed
+        done.set()
+        if self._progress_task:
+            try:
+                await asyncio.wait_for(self._progress_task, timeout=2.0)
+            except asyncio.TimeoutError:
+                self._progress_task.cancel()
+            self._progress_task = None
+        self._loading = None
+        self._progress_done = None
 
     def status(self) -> dict:
         loaded = {n: (n in self._models) for n in self._ORDER}
         used, free, total = _vram_gb()
+        loading = dict(self._loading) if self._loading else None
+        count = sum(loaded.values())
+        total_n = len(self._ORDER)
+        if loading:
+            overall_pct = min(99, int((count * 100 + loading.get("pct", 0)) / total_n))
+        elif all(loaded.values()):
+            overall_pct = 100
+        else:
+            overall_pct = int(count * 100 / total_n)
         return {
             "loaded": loaded,
             "ready": all(loaded.values()),
-            "count": sum(loaded.values()),
-            "total": len(self._ORDER),
+            "count": count,
+            "total": total_n,
+            "loading": loading,
+            "overall_pct": overall_pct,
             "errors": dict(self._errors),
             "quantization": dict(self._quant),
             "vram_gb": {"used": round(used, 2), "free": round(free, 2), "total": round(total, 2)},
             "warmup_mode": PRELOAD_MODELS,
         }
+
+    async def _cancel_load_progress(self) -> None:
+        if self._progress_done:
+            self._progress_done.set()
+        if self._progress_task:
+            try:
+                await asyncio.wait_for(self._progress_task, timeout=1.0)
+            except asyncio.TimeoutError:
+                self._progress_task.cancel()
+            self._progress_task = None
+        self._loading = None
+        self._progress_done = None
 
     def _evict_one(self, name: str) -> None:
         if name in self._models:
@@ -270,6 +349,7 @@ class ModelManager:
             flush=True,
         )
         t0 = time.time()
+        progress_done = self._start_load_progress(name)
 
         try:
             self._models[name] = await asyncio.to_thread(loader)
@@ -283,12 +363,16 @@ class ModelManager:
                 )
                 self._evict_all_except(None)
                 _compact_vram()
+                await self._cancel_load_progress()
+                progress_done = self._start_load_progress(name)
                 self._models[name] = await asyncio.to_thread(loader)
                 self._errors.pop(name, None)
             else:
+                await self._cancel_load_progress()
                 raise
 
         elapsed = time.time() - t0
+        await self._finish_load_progress(progress_done, name, elapsed)
         self._quant[name] = _inspect_quantization(name, self._models[name])
         print(f"[models] loaded {name} in {elapsed:.1f}s", flush=True)
         _log_vram(f"after {name}")
@@ -378,7 +462,9 @@ class ModelManager:
     def _load_generator(self):
         from transformers import AutoProcessor
 
+        self._set_loading_pct(8)
         processor = AutoProcessor.from_pretrained(GENERATOR_PATH, trust_remote_code=True)
+        self._set_loading_pct(22)
         model_cls = _load_generator_cls()
         precision = PRECISION.get("generator", "bf16")
         load_kwargs = dict(_build_load_kwargs(precision))
@@ -407,6 +493,7 @@ class ModelManager:
             fb.setdefault("device_map", _device())
             model = model_cls.from_pretrained(GENERATOR_PATH, **fb)
 
+        self._set_loading_pct(95)
         model.eval()
         return {"model": model, "processor": processor}
 

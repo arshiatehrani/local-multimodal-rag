@@ -7,6 +7,8 @@ META = [
     "Can you speak Farsi?",
     "Do you understand Persian?",
     "hello",
+    "Heyy",
+    "hii",
     "\u0633\u0644\u0627\u0645",
     "what languages do you speak?",
 ]

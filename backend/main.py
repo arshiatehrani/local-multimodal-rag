@@ -16,7 +16,7 @@ from pydantic import BaseModel
 import spaces
 import prompts
 from qdrant_store import ensure_collection, delete_by_file, delete_by_space
-from ingest import ingest_file, is_supported
+from ingest import ingest_file_stream, is_supported
 from query import run_query
 from model_manager import manager
 
@@ -117,27 +117,92 @@ async def upload_files(space_id: str, files: list[UploadFile] = File(...)):
     except KeyError:
         raise HTTPException(status_code=404, detail="Space not found")
 
-    results = []
-    for file in files:
-        name = file.filename or "file"
-        if not is_supported(name):
-            results.append({"filename": name, "status": "skipped",
-                            "error": "unsupported file type"})
-            continue
-        try:
-            contents = await file.read()
-            record = spaces.store_file_bytes(space_id, contents, name)
-            n = await ingest_file(contents, name, space_id, record["file_id"])
-            spaces.register_file(space_id, record, n)
-            results.append({
-                "filename": name,
-                "status": "ok",
-                "file_id": record["file_id"],
-                "chunks_stored": n,
+    async def stream():
+        supported = [f for f in files if is_supported(f.filename or "")]
+        n_files = len(supported)
+        results = []
+
+        for idx, file in enumerate(files):
+            name = file.filename or "file"
+            if not is_supported(name):
+                results.append({"filename": name, "status": "skipped", "error": "unsupported file type"})
+                yield _sse({"type": "progress", "pct": 100, "text": f"Skipped {name}", "file": name})
+                continue
+
+            sup_idx = len([f for f in files[:idx] if is_supported(f.filename or "")])
+            base = int(100 * sup_idx / max(n_files, 1))
+            span = max(1, int(100 / max(n_files, 1)))
+
+            yield _sse({
+                "type": "progress",
+                "pct": base + max(1, int(span * 0.02)),
+                "text": f"Uploading {name}…",
+                "file": name,
+                "file_index": sup_idx,
+                "file_count": n_files,
+                "stage": "upload",
             })
-        except Exception as e:  # noqa: BLE001 - surface any ingest error per file
-            results.append({"filename": name, "status": "error", "error": str(e)})
-    return {"results": results}
+
+            try:
+                contents = await file.read()
+                yield _sse({
+                    "type": "progress",
+                    "pct": base + int(span * 0.08),
+                    "text": "Saving file…",
+                    "file": name,
+                    "stage": "store",
+                })
+                record = spaces.store_file_bytes(space_id, contents, name)
+                n = 0
+                async for ev in ingest_file_stream(contents, name, space_id, record["file_id"]):
+                    if ev.get("type") == "complete":
+                        n = int(ev.get("chunks", 0))
+                        inner_pct = 100
+                        text = ev.get("text", "Complete")
+                    else:
+                        inner_pct = int(ev.get("pct", 0))
+                        text = ev.get("text", "Processing…")
+                    scaled = base + int(span * (0.1 + 0.9 * inner_pct / 100))
+                    yield _sse({
+                        "type": "progress",
+                        "pct": min(99, scaled),
+                        "text": text,
+                        "file": name,
+                        "file_index": sup_idx,
+                        "file_count": n_files,
+                        "stage": ev.get("stage", "embed"),
+                    })
+
+                spaces.register_file(space_id, record, n)
+                results.append({
+                    "filename": name,
+                    "status": "ok",
+                    "file_id": record["file_id"],
+                    "chunks_stored": n,
+                })
+                yield _sse({
+                    "type": "file_done",
+                    "filename": name,
+                    "status": "ok",
+                    "chunks_stored": n,
+                    "pct": base + span,
+                })
+            except Exception as e:  # noqa: BLE001
+                results.append({"filename": name, "status": "error", "error": str(e)})
+                yield _sse({
+                    "type": "file_done",
+                    "filename": name,
+                    "status": "error",
+                    "error": str(e),
+                })
+
+        yield _sse({"type": "done", "pct": 100, "results": results})
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.delete("/spaces/{space_id}/files/{file_id}")

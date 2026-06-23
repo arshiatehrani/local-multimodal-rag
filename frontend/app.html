@@ -101,9 +101,42 @@
   .list-item .del:hover { color: var(--danger); }
   .muted-note { color: var(--text-dim); font-size: 12px; padding: 10px; text-align: center; }
   .sidebar-footer { margin-top: 12px; font-size: 11px; color: var(--text-dim); padding: 8px; border-top: 1px solid var(--border); }
-  .status-pill { display: inline-flex; align-items: center; gap: 6px; }
-  .status-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: #555; }
-  .status-pill.online .dot { background: var(--accent); }
+  .load-status { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+  .load-status-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    font-size: 11px; color: var(--text-dim); min-height: 16px;
+  }
+  .load-status-head .dot {
+    width: 8px; height: 8px; border-radius: 50%; background: #555; flex-shrink: 0;
+  }
+  .load-status.online .dot { background: var(--accent); }
+  .load-status.err .dot { background: var(--danger); }
+  .load-status-head .label { flex: 1; line-height: 1.35; color: var(--text); }
+  .load-status-head .pct-badge {
+    font-size: 10px; font-weight: 600; color: var(--accent); flex-shrink: 0;
+  }
+  .load-bar-track {
+    width: 100%; height: 6px; border-radius: 999px;
+    background: var(--surface-2); border: 1px solid var(--border); overflow: hidden;
+  }
+  .load-bar-track.thin { height: 4px; }
+  .load-bar-fill {
+    height: 100%; width: 0%; border-radius: 999px;
+    background: linear-gradient(90deg, var(--accent-dim), var(--accent));
+    transition: width .35s ease;
+  }
+  .load-bar-fill.sub { background: linear-gradient(90deg, #3b82f6, #60a5fa); opacity: .9; }
+  .load-sub-row {
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .load-sub-label {
+    font-size: 10px; color: var(--text-dim);
+    display: flex; justify-content: space-between; gap: 6px;
+  }
+  .load-sub-label strong { color: var(--text); font-weight: 500; text-transform: capitalize; }
+  .load-status.ready .load-bars,
+  .load-status.idle .load-bars,
+  .load-status.err .load-bars { display: none; }
 
   /* Main */
   .main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
@@ -146,9 +179,19 @@
   .file-row .ficon { font-size: 18px; opacity: .8; }
   .file-row .fname { font-weight: 500; flex: 1; word-break: break-all; }
   .file-row .fmeta { font-size: 12px; color: var(--text-dim); }
-  .file-row .fstatus { font-size: 12px; color: var(--text-dim); display: flex; align-items: center; gap: 8px; }
+  .file-row .fstatus { font-size: 12px; color: var(--text-dim); flex: 0 1 220px; min-width: 140px; }
   .file-row .fstatus.ok { color: var(--accent); }
   .file-row .fstatus.err { color: var(--danger); }
+  .file-progress { width: 100%; display: flex; flex-direction: column; gap: 5px; }
+  .file-progress-head {
+    display: flex; justify-content: space-between; align-items: center; gap: 8px;
+    font-size: 11px; line-height: 1.3;
+  }
+  .file-progress-head .file-progress-label { color: var(--text-dim); flex: 1; }
+  .file-progress-head .file-progress-pct { font-weight: 600; color: var(--accent); flex-shrink: 0; }
+  .file-row .fstatus.ok .file-progress-pct,
+  .file-row .fstatus.ok .file-progress-label { color: var(--accent); }
+  .file-row .fstatus.err .file-progress-label { color: var(--danger); }
   .file-row .remove { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 16px; padding: 4px 8px; border-radius: 6px; }
   .file-row .remove:hover { color: var(--danger); background: var(--surface-2); }
   .spinner { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
@@ -198,46 +241,98 @@
   .msg.assistant .bubble { background: var(--surface); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
   .msg.assistant .bubble.status-hint { color: var(--text-dim); font-style: italic; }
   .msg.assistant .bubble.streaming { max-width: 80%; }
-  .pipeline-steps {
-    display: flex; flex-direction: column; gap: 7px;
-    font-size: 13px; color: var(--text-dim); transition: opacity .25s ease, max-height .3s ease, margin .3s ease;
+  .gemini-status-wrap {
+    display: flex; align-items: center; gap: 14px; padding: 4px 0; min-height: 52px;
+    transition: opacity .25s ease, max-height .3s ease, margin .3s ease;
   }
-  .pipeline-step {
-    display: flex; align-items: center; gap: 9px; min-height: 20px;
-    transition: color .15s ease, opacity .15s ease;
+  .gemini-step-label {
+    font-size: 13px; color: var(--text-dim); line-height: 1.4; flex: 1;
   }
-  .pipeline-step.pending { opacity: .45; }
-  .pipeline-step.active { color: var(--text); font-weight: 500; opacity: 1; }
-  .pipeline-step.done { opacity: .75; }
-  .pipeline-step.skipped { display: none; }
-  .step-marker {
-    flex-shrink: 0; width: 14px; height: 14px; border-radius: 50%;
-    border: 2px solid var(--border); box-sizing: border-box;
+  .gemini-loader {
+    width: 46px; height: 46px; position: relative; flex-shrink: 0;
   }
-  .pipeline-step.active .step-marker {
-    border-top-color: var(--accent); animation: spin .7s linear infinite;
+  .gemini-loader.gemini-inline {
+    width: 32px; height: 22px; display: inline-flex; vertical-align: middle;
+    margin-left: 4px; transform: scale(0.72); transform-origin: left center;
   }
-  .pipeline-step.done .step-marker {
-    border-color: var(--accent); background: var(--accent); position: relative;
+  .gemini-core {
+    width: 100%; height: 100%; position: relative;
+    animation: gemini-orbit 3.6s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite;
   }
-  .pipeline-step.done .step-marker::after {
-    content: ""; position: absolute; left: 3px; top: 0px; width: 4px; height: 7px;
-    border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg);
+  .gemini-dot {
+    position: absolute; top: 50%; left: 50%;
+    width: 8px; height: 8px; border-radius: 50%; margin: -4px 0 0 -4px;
+    animation: gemini-dot-path 3.6s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite;
+  }
+  .gemini-inline .gemini-dot { width: 6px; height: 6px; margin: -3px 0 0 -3px; }
+  .gemini-dot.d1 { background: #4285f4; --i: 0; animation-delay: 0s; }
+  .gemini-dot.d2 { background: #ea4335; --i: 1; animation-delay: -0.12s; }
+  .gemini-dot.d3 { background: #fbbc04; --i: 2; animation-delay: -0.24s; }
+  .gemini-dot.d4 { background: #34a853; --i: 3; animation-delay: -0.36s; }
+  @keyframes gemini-orbit {
+    0%, 18% { transform: rotate(0deg) scale(1); }
+    36% { transform: rotate(200deg) scale(1); }
+    50% { transform: rotate(360deg) scale(1.45); }
+    62% { transform: rotate(360deg) scale(0.72); }
+    74%, 100% { transform: rotate(360deg) scale(1); }
+  }
+  @keyframes gemini-dot-path {
+    0%, 18% {
+      transform: rotate(calc(var(--i) * 90deg)) translateY(-15px) scale(1);
+      opacity: 1;
+    }
+    36% {
+      transform: rotate(calc(var(--i) * 90deg + 180deg)) translateY(-15px) scale(1.05);
+    }
+    50% {
+      transform: rotate(calc(var(--i) * 90deg + 360deg)) translateY(-20px) scale(1.1);
+    }
+    62% {
+      transform: rotate(calc(var(--i) * 90deg + 360deg)) translateY(-8px) scale(0.75);
+    }
+    74% {
+      transform: translateX(calc(-10.5px + var(--i) * 7px)) translateY(0) rotate(0deg) scale(1);
+    }
+    82% {
+      transform: translateX(calc(-10.5px + var(--i) * 7px)) translateY(-7px) rotate(0deg) scale(1.15);
+    }
+    90% {
+      transform: translateX(calc(-10.5px + var(--i) * 7px)) translateY(2px) rotate(0deg) scale(0.95);
+    }
+    100% {
+      transform: rotate(calc(var(--i) * 90deg)) translateY(-15px) scale(1);
+    }
+  }
+  .gemini-inline .gemini-dot { animation-name: gemini-dot-path-inline; }
+  .gemini-inline .gemini-core { animation-name: gemini-orbit-inline; }
+  @keyframes gemini-orbit-inline {
+    0%, 18% { transform: rotate(0deg) scale(1); }
+    50% { transform: rotate(360deg) scale(1.3); }
+    62% { transform: rotate(360deg) scale(0.8); }
+    100% { transform: rotate(360deg) scale(1); }
+  }
+  @keyframes gemini-dot-path-inline {
+    0%, 18% { transform: rotate(calc(var(--i) * 90deg)) translateY(-10px) scale(1); }
+    50% { transform: rotate(calc(var(--i) * 90deg + 360deg)) translateY(-13px) scale(1.05); }
+    62% { transform: rotate(calc(var(--i) * 90deg + 360deg)) translateY(-6px) scale(0.8); }
+    74% { transform: translateX(calc(-7px + var(--i) * 4.5px)) translateY(0) rotate(0deg) scale(1); }
+    82% { transform: translateX(calc(-7px + var(--i) * 4.5px)) translateY(-4px) rotate(0deg) scale(1.1); }
+    100% { transform: rotate(calc(var(--i) * 90deg)) translateY(-10px) scale(1); }
   }
   .answer-stream {
     color: var(--text); white-space: pre-wrap; word-wrap: break-word;
     line-height: 1.55; min-height: 0;
   }
+  .answer-stream .answer-text { white-space: pre-wrap; }
   .bubble.streaming:not(.answer-visible) .answer-stream { display: none; }
-  .bubble.streaming.answer-visible .pipeline-steps {
-    opacity: 0; max-height: 0; overflow: hidden; margin: 0; pointer-events: none;
+  .bubble.streaming.answer-visible .gemini-status-wrap {
+    opacity: 0; max-height: 0; overflow: hidden; margin: 0; padding: 0; min-height: 0; pointer-events: none;
   }
-  .bubble.streaming.answer-visible .answer-stream { margin-top: 2px; }
+  .bubble.streaming.answer-visible .answer-stream { margin-top: 2px; display: block; }
+  .bubble.streaming.answer-visible .gemini-inline { display: inline-flex !important; }
   .msg.assistant .bubble strong { font-weight: 700; }
   .msg.assistant .bubble ul { margin: 8px 0 8px 20px; }
   .msg.assistant .bubble li { margin: 4px 0; }
-  .cursor { display: inline-block; width: 8px; height: 16px; background: var(--accent); margin-left: 2px; vertical-align: text-bottom; animation: blink 1s steps(2) infinite; }
-  @keyframes blink { 50% { opacity: 0; } }
 
   .sources { max-width: 760px; margin: -10px auto 22px; }
   details.sources-panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
@@ -353,7 +448,27 @@
           <span>Theme</span>
           <button type="button" class="theme-toggle" id="themeToggle" title="Toggle light/dark mode">Light mode</button>
         </div>
-        <div class="status-pill" id="statusPill"><span class="dot"></span> <span id="statusText">checking...</span></div>
+        <div class="load-status idle" id="loadStatus">
+          <div class="load-status-head">
+            <span class="dot"></span>
+            <span class="label" id="statusText">checking…</span>
+            <span class="pct-badge" id="statusPct"></span>
+          </div>
+          <div class="load-bars">
+            <div class="load-bar-track" title="Overall progress">
+              <div class="load-bar-fill" id="loadBarOverall"></div>
+            </div>
+            <div class="load-sub-row" id="loadSubRow">
+              <div class="load-sub-label">
+                <span><strong id="loadModelName">—</strong></span>
+                <span id="loadModelPct">0%</span>
+              </div>
+              <div class="load-bar-track thin" title="Current model">
+                <div class="load-bar-fill sub" id="loadBarCurrent"></div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </aside>
     <div class="rail-resizer" id="spacesResizer" role="separator" aria-orientation="vertical" aria-label="Resize spaces panel" title="Drag to resize"></div>
@@ -635,6 +750,19 @@ const PIPELINE_STEPS = [
   { step: "generate", label: "Generating response" },
 ];
 
+function createGeminiLoader(inline) {
+  const el = document.createElement("span");
+  el.className = "gemini-loader" + (inline ? " gemini-inline" : "");
+  el.setAttribute("aria-hidden", "true");
+  el.innerHTML = `<span class="gemini-core">
+    <span class="gemini-dot d1"></span>
+    <span class="gemini-dot d2"></span>
+    <span class="gemini-dot d3"></span>
+    <span class="gemini-dot d4"></span>
+  </span>`;
+  return el;
+}
+
 function createStreamingBubble() {
   const empty = document.getElementById("emptyState");
   if (empty) empty.remove();
@@ -643,70 +771,43 @@ function createStreamingBubble() {
   const bubble = document.createElement("div");
   bubble.className = "bubble streaming";
 
-  const stepsEl = document.createElement("div");
-  stepsEl.className = "pipeline-steps";
-  for (const s of PIPELINE_STEPS) {
-    const row = document.createElement("div");
-    row.className = "pipeline-step pending";
-    row.dataset.step = s.step;
-    row.innerHTML = `<span class="step-marker"></span><span class="step-label">${s.label}</span>`;
-    stepsEl.appendChild(row);
-  }
+  const loaderWrap = document.createElement("div");
+  loaderWrap.className = "gemini-status-wrap";
+  loaderWrap.appendChild(createGeminiLoader(false));
+  const stepLabel = document.createElement("div");
+  stepLabel.className = "gemini-step-label";
+  stepLabel.textContent = "Starting…";
+  loaderWrap.appendChild(stepLabel);
 
   const answerEl = document.createElement("div");
   answerEl.className = "answer-stream";
+  const answerText = document.createElement("span");
+  answerText.className = "answer-text";
+  const streamLoader = createGeminiLoader(true);
+  streamLoader.style.display = "none";
+  answerEl.appendChild(answerText);
+  answerEl.appendChild(streamLoader);
 
-  const cursor = document.createElement("span");
-  cursor.className = "cursor";
-
-  bubble.appendChild(stepsEl);
+  bubble.appendChild(loaderWrap);
   bubble.appendChild(answerEl);
-  bubble.appendChild(cursor);
   wrap.appendChild(bubble);
   chatScroll.appendChild(wrap);
   chatScroll.scrollTop = chatScroll.scrollHeight;
-  return { bubble, stepsEl, answerEl, cursor };
+  return { bubble, loaderWrap, stepLabel, answerEl, answerText, streamLoader };
 }
 
-function updatePipelineStep(stepsEl, step, text, modeRef) {
-  if (!stepsEl || !step) return;
-  const order = PIPELINE_STEPS.map(s => s.step);
-  const idx = order.indexOf(step);
-  if (idx < 0) return;
-
-  if (modeRef && modeRef.value === null) {
-    modeRef.value = step === "embed" ? "full" : "direct";
-    if (modeRef.value === "direct") {
-      ["embed", "search", "rank"].forEach(id => {
-        const row = stepsEl.querySelector(`[data-step="${id}"]`);
-        if (row) row.classList.add("skipped");
-      });
-    }
+function updatePipelineStep(_loaderWrap, step, text, _modeRef, stepLabelEl) {
+  const label = stepLabelEl || _loaderWrap?.querySelector?.(".gemini-step-label");
+  if (!label) return;
+  let msg = text || "";
+  if (!msg && step) {
+    const found = PIPELINE_STEPS.find(s => s.step === step);
+    msg = found ? found.label + "…" : step;
   }
-
-  stepsEl.querySelectorAll(".pipeline-step").forEach(row => {
-    const id = row.dataset.step;
-    if (row.classList.contains("skipped")) return;
-    const i = order.indexOf(id);
-    row.classList.remove("pending", "active", "done");
-    if (i < idx) row.classList.add("done");
-    else if (id === step) row.classList.add("active");
-    else row.classList.add("pending");
-  });
-
-  if (text) {
-    const label = stepsEl.querySelector(`[data-step="${step}"] .step-label`);
-    if (label) label.textContent = text.replace(/\u2026$|\.{3}$/, "");
-  }
+  label.textContent = msg.replace(/\u2026$|\.{3}$/, "") || "Working…";
 }
 
-function finishPipelineSteps(stepsEl) {
-  if (!stepsEl) return;
-  stepsEl.querySelectorAll(".pipeline-step:not(.skipped)").forEach(row => {
-    row.classList.remove("pending", "active");
-    row.classList.add("done");
-  });
-}
+function finishPipelineSteps() { /* gemini loader — no checklist */ }
 function updateContextRing(data) {
   const ring = document.getElementById("contextRing");
   const fill = document.getElementById("contextFill");
@@ -741,32 +842,105 @@ function isSupported(name) {
 
 /* ---------- Health ---------- */
 let modelsReady = false;
-async function checkHealth() {
-  const pill = document.getElementById("statusPill");
+let healthPollMs = 400;
+
+const MODEL_LABELS = { embedder: "Embedder", reranker: "Reranker", generator: "Generator" };
+
+function setLoadBars(overallPct, modelName, modelPct, count, total) {
+  const overallBar = document.getElementById("loadBarOverall");
+  const currentBar = document.getElementById("loadBarCurrent");
+  const subRow = document.getElementById("loadSubRow");
+  const nameEl = document.getElementById("loadModelName");
+  const modelPctEl = document.getElementById("loadModelPct");
+  const pctBadge = document.getElementById("statusPct");
+  if (!overallBar) return;
+
+  const overall = Math.max(0, Math.min(100, overallPct ?? 0));
+  const current = Math.max(0, Math.min(100, modelPct ?? 0));
+  overallBar.style.width = overall + "%";
+  currentBar.style.width = current + "%";
+  pctBadge.textContent = overall + "%";
+
+  if (modelName) {
+    subRow.style.display = "";
+    nameEl.textContent = MODEL_LABELS[modelName] || modelName;
+    modelPctEl.textContent = current + "% · " + count + "/" + total;
+    overallBar.parentElement.title = "Overall · " + count + " of " + total + " models ready";
+    currentBar.parentElement.title = (MODEL_LABELS[modelName] || modelName) + " loading";
+  } else {
+    subRow.style.display = "none";
+    overallBar.parentElement.title = "Loading models";
+  }
+}
+
+function updateLoadStatusUI(state, s) {
+  const wrap = document.getElementById("loadStatus");
   const txt = document.getElementById("statusText");
+  const pctBadge = document.getElementById("statusPct");
+  if (!wrap || !txt) return;
+
+  wrap.classList.remove("idle", "online", "ready", "err", "loading");
+  wrap.classList.add(state);
+  if (state === "loading" || state === "ready") wrap.classList.add("online");
+
+  if (state === "ready") {
+    txt.textContent = "Models ready";
+    pctBadge.textContent = "";
+    setLoadBars(100, null, 0, s?.total || 3, s?.total || 3);
+    return;
+  }
+  if (state === "offline") {
+    txt.textContent = "Backend offline";
+    pctBadge.textContent = "";
+    return;
+  }
+  if (state === "err") {
+    const nErr = s?.errors ? Object.keys(s.errors).length : 0;
+    txt.textContent = "Load error — see terminal";
+    pctBadge.textContent = nErr ? String(nErr) : "";
+    return;
+  }
+  if (state === "loading") {
+    txt.textContent = "Loading models";
+    const overall = s.overall_pct ?? 0;
+    const modelName = s.loading?.name || (s.count === 0 ? "embedder" : null);
+    const modelPct = s.loading?.pct ?? (s.count === 0 ? 0 : 100);
+    setLoadBars(overall, modelName, modelPct, s.count, s.total);
+    return;
+  }
+  txt.textContent = "Backend online";
+  pctBadge.textContent = "";
+}
+
+async function checkHealth() {
   try {
     const r = await fetch(API + "/health");
     if (!r.ok) throw new Error();
-    pill.classList.add("online");
     if (!modelsReady) {
       try {
         const s = await (await fetch(API + "/models/status")).json();
         modelsReady = s.ready;
         const nErr = s.errors ? Object.keys(s.errors).length : 0;
-        if (s.ready) txt.textContent = "models ready";
-        else if (nErr) txt.textContent = `load error (${nErr}) - see terminal`;
-        else if (s.count === 0) txt.textContent = "loading models 0/3...";
-        else if (s.count < s.total) txt.textContent = `loading models ${s.count}/${s.total}...`;
-        else txt.textContent = "models ready";
-      } catch { txt.textContent = "backend online"; }
+        if (s.ready) updateLoadStatusUI("ready", s);
+        else if (nErr) updateLoadStatusUI("err", s);
+        else updateLoadStatusUI("loading", s);
+        healthPollMs = s.ready ? 3000 : 400;
+      } catch { updateLoadStatusUI("online"); healthPollMs = 2000; }
     } else {
-      txt.textContent = "models ready";
+      updateLoadStatusUI("ready", { total: 3 });
+      healthPollMs = 3000;
     }
-  } catch { pill.classList.remove("online"); modelsReady = false; txt.textContent = "backend offline"; }
+  } catch {
+    modelsReady = false;
+    updateLoadStatusUI("offline");
+    healthPollMs = 2000;
+  }
 }
-checkHealth();
-// Poll quickly while models warm up, then back off once they're ready.
-setInterval(checkHealth, 3000);
+
+function scheduleHealthPoll() {
+  checkHealth().finally(() => setTimeout(scheduleHealthPoll, healthPollMs));
+}
+scheduleHealthPoll();
 
 /* ---------- Spaces ---------- */
 const spaceList = document.getElementById("spaceList");
@@ -1115,36 +1289,112 @@ async function uploadFiles(fileListLike) {
 
   const row = document.createElement("div");
   row.className = "file-row";
-  row.innerHTML = `<span class="ficon">&#8635;</span>
-    <span class="fname"></span>
-    <span class="fstatus"><span class="spinner"></span> uploading & embedding...</span>`;
+  row.innerHTML = `<span class="ficon">&#8635;</span><span class="fname"></span><span class="fstatus"></span>`;
   row.querySelector(".fname").textContent =
     files.length === 1 ? files[0].name : `${files.length} files` + (skipped ? ` (${skipped} unsupported skipped)` : "");
   uploadList.prepend(row);
   const statusEl = row.querySelector(".fstatus");
+  statusEl.appendChild(createFileProgressUI());
+  setFileProgress(statusEl, 0, "Starting…");
 
   const fd = new FormData();
   files.forEach(f => fd.append("files", f, f.name));
+
   try {
-    const r = await fetch(`${API}/spaces/${state.spaceId}/files`, { method: "POST", body: fd });
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok) {
-      const detail = data.detail;
-      throw new Error(typeof detail === "string" ? detail : "Upload failed");
-    }
-    const results = data.results || [];
+    const done = await uploadFilesStream(`${API}/spaces/${state.spaceId}/files`, fd, (pct, text) => {
+      setFileProgress(statusEl, pct, text);
+    });
+    const results = done.results || [];
     const ok = results.filter(x => x.status === "ok").length;
     const errs = results.filter(x => x.status === "error");
     statusEl.className = "fstatus" + (errs.length ? " err" : " ok");
-    statusEl.textContent = errs.length
-      ? `\u2717 ${ok} ok, ${errs.length} failed (${errs[0].error})`
-      : `\u2713 stored ${ok} file(s)`;
+    setFileProgress(statusEl, 100, errs.length
+      ? `${ok} ok, ${errs.length} failed`
+      : `Complete · ${ok} file(s) stored`);
     await selectSpace(state.spaceId);
     switchTab("files");
   } catch (err) {
     statusEl.className = "fstatus err";
-    statusEl.textContent = "\u2717 " + err.message;
+    setFileProgress(statusEl, 0, err.message || "Upload failed");
   }
+}
+
+function createFileProgressUI() {
+  const wrap = document.createElement("div");
+  wrap.className = "file-progress";
+  wrap.innerHTML = `<div class="file-progress-head">
+      <span class="file-progress-label">Starting…</span>
+      <span class="file-progress-pct">0%</span>
+    </div>
+    <div class="load-bar-track thin"><div class="load-bar-fill"></div></div>`;
+  return wrap;
+}
+
+function setFileProgress(statusEl, pct, label) {
+  const prog = statusEl.querySelector(".file-progress");
+  if (!prog) return;
+  const p = Math.max(0, Math.min(100, Math.round(pct)));
+  prog.querySelector(".file-progress-label").textContent = label || "Processing…";
+  prog.querySelector(".file-progress-pct").textContent = p + "%";
+  prog.querySelector(".load-bar-fill").style.width = p + "%";
+}
+
+function consumeSseBuffer(buffer, onEvent) {
+  const parts = buffer.split("\n\n");
+  const rest = parts.pop() || "";
+  for (const evt of parts) {
+    const line = evt.split("\n").find(l => l.startsWith("data:"));
+    if (!line) continue;
+    try { onEvent(JSON.parse(line.slice(5).trim())); } catch { /* ignore */ }
+  }
+  return rest;
+}
+
+function uploadFilesStream(url, formData, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    let buffer = "";
+    let parsedLen = 0;
+    let finalPayload = null;
+
+    function handleEvent(data) {
+      if (data.type === "done") finalPayload = data;
+      else if (data.type === "progress" && data.pct != null) {
+        onProgress(data.pct, data.text || "Processing…");
+      } else if (data.type === "file_done" && data.status === "error") {
+        onProgress(data.pct || 0, "Failed: " + (data.error || data.filename));
+      }
+    }
+
+    function drain() {
+      const text = xhr.responseText || "";
+      if (text.length > parsedLen) {
+        buffer += text.slice(parsedLen);
+        parsedLen = text.length;
+      }
+      buffer = consumeSseBuffer(buffer, handleEvent);
+    }
+
+    xhr.upload.addEventListener("progress", (e) => {
+      if (e.lengthComputable) {
+        onProgress(Math.round(12 * e.loaded / e.total), "Uploading…");
+      }
+    });
+
+    xhr.onreadystatechange = () => {
+      if (xhr.readyState >= 3) drain();
+    };
+
+    xhr.onload = () => {
+      drain();
+      if (buffer.trim()) buffer = consumeSseBuffer(buffer + "\n\n", handleEvent);
+      if (xhr.status >= 200 && xhr.status < 300 && finalPayload) resolve(finalPayload);
+      else reject(new Error(finalPayload?.error || xhr.statusText || "Upload failed"));
+    };
+    xhr.onerror = () => reject(new Error("Network error during upload"));
+    xhr.send(formData);
+  });
 }
 
 /* ---------- Instructions / prompt library ---------- */
@@ -1618,7 +1868,7 @@ async function sendMessage() {
   sendBtn.disabled = true;
   chatInput.disabled = true;
 
-  const { bubble, stepsEl, answerEl, cursor } = createStreamingBubble();
+  const { bubble, loaderWrap, stepLabel, answerEl, answerText, streamLoader } = createStreamingBubble();
 
   let answer = "";
   let pendingSources = null;
@@ -1651,18 +1901,15 @@ async function sendMessage() {
         if (data.type === "token") {
           if (!answerStarted) {
             answerStarted = true;
-            if (pipelineMode.value === null) {
-              stepsEl.querySelectorAll(".pipeline-step").forEach(r => r.classList.add("skipped"));
-            } else {
-              finishPipelineSteps(stepsEl);
-            }
+            finishPipelineSteps();
             bubble.classList.add("answer-visible");
+            streamLoader.style.display = "inline-flex";
           }
           answer += data.text;
-          answerEl.textContent = answer;
+          answerText.textContent = answer;
           chatScroll.scrollTop = chatScroll.scrollHeight;
         } else if (data.type === "status") {
-          updatePipelineStep(stepsEl, data.step, data.text, pipelineMode);
+          updatePipelineStep(loaderWrap, data.step, data.text, pipelineMode, stepLabel);
           chatScroll.scrollTop = chatScroll.scrollHeight;
         } else if (data.type === "context") {
           updateContextRing(data);
@@ -1670,21 +1917,25 @@ async function sendMessage() {
           pendingSources = data.sources;
           sourcesPanelEl = renderSources(pendingSources, sourcesPanelEl);
         } else if (data.type === "done") {
-          finishPipelineSteps(stepsEl);
+          finishPipelineSteps();
           bubble.classList.add("answer-visible");
-          cursor.remove();
+          streamLoader.remove();
           answerEl.innerHTML = renderMarkdown(answer);
         }
       }
     }
-    cursor.remove();
-    if (answer && !answerEl.innerHTML) answerEl.innerHTML = renderMarkdown(answer);
+    streamLoader.remove();
+    if (answer && !answerEl.querySelector(".answer-text")) {
+      if (!answerEl.innerHTML) answerEl.innerHTML = renderMarkdown(answer);
+    } else if (answer && answerEl.querySelector(".answer-text") && !answerEl.innerHTML.includes("<")) {
+      answerEl.innerHTML = renderMarkdown(answer);
+    }
     if (pendingSources && !sourcesPanelEl) sourcesPanelEl = renderSources(pendingSources);
     loadChats();  // refresh title/order after first message
   } catch (err) {
-    cursor.remove();
+    streamLoader.remove();
     bubble.classList.add("answer-visible");
-    answerEl.textContent = (answer ? answer + "\n\n" : "") + "[Error] " + err.message;
+    answerEl.innerHTML = (answer ? renderMarkdown(answer) + "<br><br>" : "") + escapeHtml("[Error] " + err.message);
   } finally {
     state.streaming = false;
     sendBtn.disabled = false;

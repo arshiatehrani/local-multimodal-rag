@@ -7,6 +7,7 @@ Supports PDFs (text chunks + embedded images), standalone images, and videos
 import io
 import os
 import re
+import asyncio
 import base64
 import tempfile
 from pathlib import Path
@@ -306,36 +307,50 @@ def process_video(file_bytes: bytes, filename: str) -> list:
     return items
 
 
-async def ingest_file(file_bytes: bytes, filename: str, space_id: str, file_id: str) -> int:
-    """Chunk + embed a file and store its vectors, tagged with space_id/file_id."""
-    ensure_collection()
+def _items_from_bytes(file_bytes: bytes, filename: str) -> list:
     ext = Path(filename).suffix.lower()
-
     if ext == ".pdf":
-        items = process_pdf(file_bytes, filename)
-    elif ext in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff"}:
-        items = process_image(file_bytes, filename)
-    elif ext in {".mp4", ".avi", ".mov", ".mkv"}:
-        items = process_video(file_bytes, filename)
-    else:
-        raise ValueError(f"Unsupported file type: {ext}")
+        return process_pdf(file_bytes, filename)
+    if ext in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff"}:
+        return process_image(file_bytes, filename)
+    if ext in {".mp4", ".avi", ".mov", ".mkv"}:
+        return process_video(file_bytes, filename)
+    raise ValueError(f"Unsupported file type: {ext}")
 
+
+async def ingest_file_stream(file_bytes: bytes, filename: str, space_id: str, file_id: str):
+    """Yield progress events while chunking, embedding, and upserting."""
+    ensure_collection()
+    yield {"type": "progress", "pct": 5, "text": "Processing document…", "stage": "process"}
+
+    items = await asyncio.to_thread(_items_from_bytes, file_bytes, filename)
     if not items:
-        return 0
+        yield {"type": "complete", "chunks": 0, "pct": 100, "text": "No content extracted"}
+        return
+
+    total = len(items)
+    n_batches = max(1, (total + EMBED_BATCH - 1) // EMBED_BATCH)
+    yield {
+        "type": "progress",
+        "pct": 15,
+        "text": f"Prepared {total} chunk{'s' if total != 1 else ''}",
+        "stage": "process",
+        "chunks_total": total,
+    }
 
     all_vectors, all_payloads = [], []
     async with await manager.embedder() as embedder:
-        for i in range(0, len(items), EMBED_BATCH):
+        for bi, i in enumerate(range(0, total, EMBED_BATCH)):
             batch = items[i:i + EMBED_BATCH]
             encode_inputs = []
             for item in batch:
                 if item["type"] == "text":
                     encode_inputs.append(item["content"])
                 else:
-                    # Qwen3-VL embedder accepts a dict with an "image" PIL object.
                     encode_inputs.append({"image": _cap_image(item["content"])})
 
-            vecs = embedder.encode(
+            vecs = await asyncio.to_thread(
+                embedder.encode,
                 encode_inputs,
                 prompt=DOC_INSTRUCTION,
                 normalize_embeddings=True,
@@ -351,5 +366,31 @@ async def ingest_file(file_bytes: bytes, filename: str, space_id: str, file_id: 
                     pay["text"] = item["content"]
                 all_payloads.append(pay)
 
-    upsert_points(all_vectors, all_payloads)
-    return len(all_vectors)
+            done = min(i + len(batch), total)
+            pct = 15 + int(78 * (bi + 1) / n_batches)
+            yield {
+                "type": "progress",
+                "pct": pct,
+                "text": f"Embedding {done}/{total} chunks…",
+                "stage": "embed",
+                "chunks_done": done,
+                "chunks_total": total,
+            }
+
+    yield {"type": "progress", "pct": 96, "text": "Saving to vector store…", "stage": "store"}
+    await asyncio.to_thread(upsert_points, all_vectors, all_payloads)
+    yield {
+        "type": "complete",
+        "chunks": len(all_vectors),
+        "pct": 100,
+        "text": f"Stored {len(all_vectors)} chunk{'s' if len(all_vectors) != 1 else ''}",
+    }
+
+
+async def ingest_file(file_bytes: bytes, filename: str, space_id: str, file_id: str) -> int:
+    """Chunk + embed a file and store its vectors, tagged with space_id/file_id."""
+    chunks = 0
+    async for ev in ingest_file_stream(file_bytes, filename, space_id, file_id):
+        if ev.get("type") == "complete":
+            chunks = int(ev.get("chunks", 0))
+    return chunks

@@ -46,6 +46,31 @@ _DOC_TOPIC = re.compile(
 )
 
 
+_CHITCHAT_WORDS = frozenset({
+    "hi", "hii", "hey", "heyy", "heyyy", "hello", "helloo", "yo", "sup", "howdy",
+    "greetings", "thanks", "thankyou", "ok", "okay", "cool", "nice", "great",
+    "bye", "goodbye", "morning", "evening", "afternoon",
+})
+
+
+def _is_casual_greeting(query: str) -> bool:
+    """Match hi/hey/hello variants (heyy, hiii) and other short greetings."""
+    q = query.strip().lower()
+    q = re.sub(r"[!?.…,]+$", "", q).strip()
+    if not q or len(q) > 40:
+        return False
+    compact = re.sub(r"[\s'\"]+", "", q)
+    if re.fullmatch(r"h+i+", compact) or re.fullmatch(r"h+e+y+", compact):
+        return True
+    if re.fullmatch(r"h+e+l+o+", compact):
+        return True
+    if compact in _CHITCHAT_WORDS:
+        return True
+    if re.fullmatch(r"(thanks|thankyou|goodmorning|goodevening|goodafternoon)", compact):
+        return True
+    return False
+
+
 def _is_conversational_meta(query: str) -> bool:
     """Greetings / language-capability questions that should not use document RAG."""
     q = query.strip()
@@ -70,7 +95,9 @@ def _is_conversational_meta(query: str) -> bool:
     if re.search(r"what\s+(language|languages)\b", lower):
         return True
 
-    # Short greetings / thanks only
+    # Short greetings / thanks (incl. heyy, hii, yo)
+    if _is_casual_greeting(q):
+        return True
     if re.search(r"^(hi|hello|hey|thanks|thank you)\b", lower) and len(q) < 50:
         return True
 
@@ -101,7 +128,7 @@ def _meta_fast_answer(query: str) -> str | None:
     ):
         return "بله، می‌توانم به فارسی پاسخ دهم." if has_persian else "Yes, I can respond in Farsi/Persian."
 
-    if re.search(r"^(hi|hello|hey)\b", q, re.I):
+    if _is_casual_greeting(q) or re.search(r"^(hi|hello|hey)\b", q, re.I):
         return "Hello! Ask me anything about the files in this space."
     if re.search(r"^(thanks|thank you)\b", q, re.I):
         return "You're welcome!"
