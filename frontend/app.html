@@ -1547,24 +1547,47 @@ const chatInput = document.getElementById("chatInput");
 const sendBtn = document.getElementById("sendBtn");
 
 let chatScrollRaf = 0;
-let chatAutoScroll = true;
+let chatFollowBottom = true;
 
-function isChatNearBottom(threshold = 96) {
+function isChatNearBottom(threshold = 48) {
   return chatScroll.scrollHeight - chatScroll.scrollTop - chatScroll.clientHeight <= threshold;
 }
 
 function scrollChatToBottom(force = false) {
-  if (!force && !chatAutoScroll) return;
   if (chatScrollRaf) cancelAnimationFrame(chatScrollRaf);
   chatScrollRaf = requestAnimationFrame(() => {
     chatScrollRaf = 0;
+    if (force) {
+      chatFollowBottom = true;
+      chatScroll.scrollTop = chatScroll.scrollHeight;
+      return;
+    }
+    if (!chatFollowBottom || !isChatNearBottom()) return;
     chatScroll.scrollTop = chatScroll.scrollHeight;
   });
 }
 
 chatScroll.addEventListener("scroll", () => {
-  chatAutoScroll = isChatNearBottom();
+  chatFollowBottom = isChatNearBottom();
 }, { passive: true });
+
+chatScroll.addEventListener("wheel", (e) => {
+  if (e.deltaY < 0) chatFollowBottom = false;
+}, { passive: true });
+
+chatScroll.addEventListener("touchstart", (e) => {
+  chatScroll._touchY = e.touches[0]?.clientY;
+}, { passive: true });
+
+chatScroll.addEventListener("touchmove", (e) => {
+  const y = e.touches[0]?.clientY;
+  if (chatScroll._touchY != null && y < chatScroll._touchY - 6) chatFollowBottom = false;
+  chatScroll._touchY = y;
+}, { passive: true });
+
+chatScroll.addEventListener("keydown", (e) => {
+  if (e.key === "ArrowUp" || e.key === "PageUp" || e.key === "Home") chatFollowBottom = false;
+});
 
 document.getElementById("newChatBtn").addEventListener("click", async () => {
   if (!(await validateCurrentSpace())) {
@@ -2116,7 +2139,7 @@ async function sendMessage() {
   state.streaming = true;
   sendBtn.disabled = true;
   chatInput.disabled = true;
-  chatAutoScroll = true;
+  chatFollowBottom = true;
 
   const { bubble, loaderWrap, stepsEl, progressFill, answerEl, answerText, streamLoader } = createStreamingBubble();
 
@@ -2171,7 +2194,7 @@ async function sendMessage() {
           streamLoader.parentElement?.remove();
           answerEl.innerHTML = renderMarkdown(answer);
           if (pendingSources && !sourcesPanelEl) sourcesPanelEl = renderSources(pendingSources, null, false);
-          scrollChatToBottom(true);
+          scrollChatToBottom();
         }
       }
     }
@@ -2184,14 +2207,14 @@ async function sendMessage() {
       answerEl.innerHTML = renderMarkdown(answer);
     }
     if (pendingSources && !sourcesPanelEl) sourcesPanelEl = renderSources(pendingSources, null, false);
-    scrollChatToBottom(true);
+    scrollChatToBottom();
     loadChats();  // refresh title/order after first message
   } catch (err) {
     loaderWrap.remove();
     bubble.classList.remove("streaming");
     streamLoader.parentElement?.remove();
     answerEl.innerHTML = (answer ? renderMarkdown(answer) + "<br><br>" : "") + escapeHtml("[Error] " + err.message);
-    scrollChatToBottom(true);
+    scrollChatToBottom();
   } finally {
     state.streaming = false;
     sendBtn.disabled = false;
