@@ -686,9 +686,15 @@ def build_word_count_response(space_id: str, hints: dict) -> tuple[str, list[dic
             stats = files[0]["text_stats"]
             wc = int(stats.get("word_count", 0))
             cc = int(stats.get("char_count", 0))
+            no_ws = int(stats.get("char_count_no_space", 0))
+            paras = int(stats.get("paragraph_count", 0))
             answer = (
-                f"The document contains **{wc}** words "
-                f"({cc} characters — precise counts computed at ingest)."
+                f"The document contains **{wc}** words, **{cc}** characters "
+                f"({no_ws} excluding whitespace), and **{paras}** paragraphs.\n\n"
+                f"These counts are computed from the PDF text extracted at ingest "
+                f"(words = non-whitespace tokens; paragraphs = blocks separated by blank lines). "
+                f"They may differ by a few words from Word or Google Docs, which use pasted text "
+                f"and different counting rules."
             )
             return answer, [_file_source(files[0], stats)]
         lines = [f"This space contains **{len(files)}** files with the following word counts:"]
