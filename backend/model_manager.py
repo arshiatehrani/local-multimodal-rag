@@ -29,9 +29,8 @@ EMBEDDER_PATH = os.path.join(MODELS_DIR, "Qwen3-VL-Embedding-2B")
 RERANKER_PATH = os.path.join(MODELS_DIR, "Qwen3-VL-Reranker-2B")
 GENERATOR_PATH = os.path.join(MODELS_DIR, "Qwen3-VL-2B-Instruct")
 
-# Stop background warmup after this model (safest on 6 GB). Set PRELOAD_MODELS=all
-# to attempt all three (may OOM). Values: embedder | all | none
-PRELOAD_MODELS = os.environ.get("PRELOAD_MODELS", "embedder").lower()
+# embedder | all | none  — default loads all three at startup
+PRELOAD_MODELS = os.environ.get("PRELOAD_MODELS", "all").lower()
 
 # After a single 4-bit model loads, used VRAM should stay below this (GB).
 _SINGLE_MODEL_VRAM_WARN_GB = float(os.environ.get("SINGLE_MODEL_VRAM_WARN_GB", "2.5"))
@@ -110,6 +109,63 @@ def _log_vram(label: str) -> None:
         print(f"[models] VRAM {label}: {used:.1f} GB used, {free:.1f} GB free / {total:.1f} GB", flush=True)
 
 
+def _inspect_quantization(name: str, obj) -> dict:
+    """Walk loaded modules and report whether weights are truly 4-bit/8-bit."""
+    configured = PRECISION.get(name, "?")
+    stats = {
+        "configured": configured,
+        "linear4bit": 0,
+        "linear8bit": 0,
+        "other_linear": 0,
+        "total_modules": 0,
+        "verdict": "unknown",
+    }
+
+    def _walk(root):
+        if isinstance(root, dict):
+            for v in root.values():
+                yield from _walk(v)
+            return
+        # SentenceTransformer / CrossEncoder
+        for attr in ("_first_module", "auto_model", "model", "transformer"):
+            child = getattr(root, attr, None)
+            if child is not None:
+                yield from _walk(child)
+        if hasattr(root, "modules"):
+            for mod in root.modules():
+                yield mod
+
+    for mod in _walk(obj):
+        stats["total_modules"] += 1
+        cls = type(mod).__name__
+        mod_name = type(mod).__module__ or ""
+        if cls == "Linear4bit" or "Linear4bit" in cls:
+            stats["linear4bit"] += 1
+        elif cls == "Linear8bitLt" or "Linear8bit" in cls:
+            stats["linear8bit"] += 1
+        elif cls == "Linear" and "torch.nn" in mod_name:
+            stats["other_linear"] += 1
+
+    if stats["linear4bit"] > 0:
+        stats["verdict"] = "4bit (NF4) confirmed"
+    elif stats["linear8bit"] > 0:
+        stats["verdict"] = "8bit confirmed"
+    elif stats["other_linear"] > 0 and configured in ("4bit", "8bit"):
+        stats["verdict"] = f"NOT quantized — {stats['other_linear']} regular Linear layers (likely fp16/fp32)"
+    elif configured in ("bf16", "fp16", "fp32", "auto"):
+        stats["verdict"] = f"float ({configured})"
+    else:
+        stats["verdict"] = "could not detect quant layers (check logs)"
+
+    print(
+        f"[models] quant check {name}: configured={configured} | "
+        f"Linear4bit={stats['linear4bit']} Linear8bit={stats['linear8bit']} "
+        f"regular_Linear={stats['other_linear']} | {stats['verdict']}",
+        flush=True,
+    )
+    return stats
+
+
 def _is_oom(exc: BaseException) -> bool:
     name = type(exc).__name__
     if "OutOfMemory" in name or "out of memory" in str(exc).lower():
@@ -167,6 +223,7 @@ class ModelManager:
     def __init__(self):
         self._models: dict = {}
         self._errors: dict = {}
+        self._quant: dict = {}
         self._lock = asyncio.Lock()
         self._loaders = {
             "embedder": self._load_embedder,
@@ -183,6 +240,7 @@ class ModelManager:
             "count": sum(loaded.values()),
             "total": len(self._ORDER),
             "errors": dict(self._errors),
+            "quantization": dict(self._quant),
             "vram_gb": {"used": round(used, 2), "free": round(free, 2), "total": round(total, 2)},
             "warmup_mode": PRELOAD_MODELS,
         }
@@ -231,6 +289,7 @@ class ModelManager:
                 raise
 
         elapsed = time.time() - t0
+        self._quant[name] = _inspect_quantization(name, self._models[name])
         print(f"[models] loaded {name} in {elapsed:.1f}s", flush=True)
         _log_vram(f"after {name}")
 
@@ -239,13 +298,14 @@ class ModelManager:
         if delta > _SINGLE_MODEL_VRAM_WARN_GB and _device() == "cuda":
             msg = (
                 f"{name} added ~{delta:.1f} GB VRAM (now {used_after:.1f} GB total). "
-                f"Expected ~1.3 GB for 4-bit — quantization may have failed."
+                f"Expected ~1.3 GB for 4-bit — see quant check above."
             )
             print(f"[models] WARNING: {msg}", flush=True)
-            self._errors[name] = msg
+            if self._quant[name].get("verdict", "").startswith("NOT quantized"):
+                self._errors[name] = self._quant[name]["verdict"]
 
     async def preload_all(self):
-        """Background warmup at startup. Default: embedder only (safe on 6 GB)."""
+        """Background warmup at startup — loads all three models sequentially."""
         if PRELOAD_MODELS == "none":
             print("[models] warmup skipped (PRELOAD_MODELS=none)", flush=True)
             return
@@ -258,31 +318,18 @@ class ModelManager:
                 if name in self._models:
                     continue
                 try:
-                    await self._load_one(name)
+                    await self._load_one(name, evict_others_on_retry=False)
                 except Exception as e:
                     self._errors[name] = repr(e)
                     print(f"[models] FAILED to load {name}: {e!r}", flush=True)
                     traceback.print_exc()
                     break
 
-                used, free, _ = _vram_gb()
-                if used > _SINGLE_MODEL_VRAM_WARN_GB:
-                    print(
-                        f"[models] stopping warmup early — {used:.1f} GB used after "
-                        f"{name} (likely not 4-bit). Remaining models load on first use.",
-                        flush=True,
-                    )
-                    break
-                if free < _LOAD_HEADROOM_GB and name != targets[-1]:
-                    print(
-                        f"[models] stopping warmup early — only {free:.1f} GB free "
-                        f"(need {_LOAD_HEADROOM_GB} GB headroom for next load).",
-                        flush=True,
-                    )
-                    break
-
         st = self.status()
         print(f"[models] warmup finished: {st['count']}/{st['total']} loaded", flush=True)
+        if st["quantization"]:
+            for n, q in st["quantization"].items():
+                print(f"[models]   {n}: {q.get('verdict', '?')}", flush=True)
 
     async def embedder(self):
         return _ModelContext(self, "embedder")

@@ -2,9 +2,9 @@
 
 A "Space" is a self-contained project. On disk:
 
-    spaces/<space_id>/
-        space.json                      # metadata + file list
-        media/<file_id>__<name>         # original uploaded files
+    spaces/<folder_name>/              # human-readable, e.g. "test" or "my-project__a1b2c3d4"
+        space.json                      # metadata + file list (id is stable UUID)
+        media/<original-filename>       # uploaded files (deduped if same name)
         chats/<chat_id>.json            # one conversation each
 
 Vectors live in Qdrant (see qdrant_store.py); this module only owns the
@@ -45,8 +45,44 @@ def _safe_name(name: str) -> str:
     return base[:120]
 
 
+def _slug(name: str, max_len: int = 48) -> str:
+    """Filesystem-safe slug from a display name."""
+    s = name.strip().lower()
+    s = re.sub(r"[^a-z0-9]+", "-", s).strip("-")
+    return (s[:max_len] or "space")
+
+
+def _find_space_dir(space_id: str) -> str | None:
+    """Locate a space folder by its stable id (works for old UUID folder names too)."""
+    if not os.path.isdir(SPACES_DIR):
+        return None
+    for entry in os.listdir(SPACES_DIR):
+        meta = os.path.join(SPACES_DIR, entry, "space.json")
+        if not os.path.isfile(meta):
+            continue
+        try:
+            data = _read_json(meta)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if data.get("id") == space_id:
+            return os.path.join(SPACES_DIR, entry)
+    return None
+
+
 def _space_dir(space_id: str) -> str:
-    return os.path.join(SPACES_DIR, space_id)
+    d = _find_space_dir(space_id)
+    if d is None:
+        raise KeyError(f"Space '{space_id}' not found")
+    return d
+
+
+def _unique_folder(name: str, space_id: str) -> str:
+    """Pick a readable folder name; append short id suffix on collision."""
+    base = _slug(name)
+    candidate = base
+    if os.path.exists(os.path.join(SPACES_DIR, candidate)):
+        candidate = f"{base}__{space_id[:8]}"
+    return candidate
 
 
 def _media_dir(space_id: str) -> str:
@@ -57,8 +93,23 @@ def _chats_dir(space_id: str) -> str:
     return os.path.join(_space_dir(space_id), "chats")
 
 
-def _space_json(space_id: str) -> str:
+def _space_json_path(space_id: str) -> str:
     return os.path.join(_space_dir(space_id), "space.json")
+
+
+def _unique_media_name(space_id: str, original_name: str) -> str:
+    """Readable stored filename; add _2, _3 … if the name already exists."""
+    safe = _safe_name(original_name)
+    media = _media_dir(space_id)
+    path = os.path.join(media, safe)
+    if not os.path.exists(path):
+        return safe
+    stem, ext = os.path.splitext(safe)
+    for i in range(2, 100):
+        candidate = f"{stem}_{i}{ext}"
+        if not os.path.exists(os.path.join(media, candidate)):
+            return candidate
+    return f"{stem}_{_new_id()[:6]}{ext}"
 
 
 def _read_json(path: str) -> dict:
@@ -91,30 +142,41 @@ def kind_for(filename: str) -> str:
 def create_space(name: str) -> dict:
     name = (name or "").strip() or "Untitled space"
     space_id = _new_id()
+    folder = _unique_folder(name, space_id)
+    root = os.path.join(SPACES_DIR, folder)
     with _lock:
-        os.makedirs(_media_dir(space_id), exist_ok=True)
-        os.makedirs(_chats_dir(space_id), exist_ok=True)
+        os.makedirs(os.path.join(root, "media"), exist_ok=True)
+        os.makedirs(os.path.join(root, "chats"), exist_ok=True)
         data = {
             "id": space_id,
             "name": name,
+            "folder": folder,
             "system_prompt": "",
             "created_at": _now(),
             "files": [],
         }
-        _write_json(_space_json(space_id), data)
+        _write_json(os.path.join(root, "space.json"), data)
     return data
 
 
 def update_space(space_id: str, name: str | None = None,
                  system_prompt: str | None = None) -> dict:
-    """Update a space's name and/or its per-space system prompt (instructions)."""
+    """Update a space's name and/or system prompt. Renames folder when name changes."""
     with _lock:
         data = get_space(space_id)
+        old_dir = _space_dir(space_id)
         if name is not None and name.strip():
-            data["name"] = name.strip()
+            new_name = name.strip()
+            if new_name != data.get("name"):
+                data["name"] = new_name
+                new_folder = _unique_folder(new_name, space_id)
+                new_dir = os.path.join(SPACES_DIR, new_folder)
+                if new_dir != old_dir:
+                    os.rename(old_dir, new_dir)
+                data["folder"] = new_folder
         if system_prompt is not None:
             data["system_prompt"] = system_prompt
-        _write_json(_space_json(space_id), data)
+        _write_json(_space_json_path(space_id), data)
     return data
 
 
@@ -123,7 +185,7 @@ def list_spaces() -> list:
         return []
     out = []
     for entry in os.listdir(SPACES_DIR):
-        meta = _space_json(entry)
+        meta = os.path.join(SPACES_DIR, entry, "space.json")
         if not os.path.isfile(meta):
             continue
         try:
@@ -133,6 +195,7 @@ def list_spaces() -> list:
         out.append({
             "id": data.get("id", entry),
             "name": data.get("name", entry),
+            "folder": data.get("folder", entry),
             "created_at": data.get("created_at", ""),
             "n_files": len(data.get("files", [])),
         })
@@ -141,10 +204,10 @@ def list_spaces() -> list:
 
 
 def get_space(space_id: str) -> dict:
-    meta = _space_json(space_id)
-    if not os.path.isfile(meta):
+    path = _space_json_path(space_id)
+    if not os.path.isfile(path):
         raise KeyError(f"Space '{space_id}' not found")
-    return _read_json(meta)
+    return _read_json(path)
 
 
 def delete_space(space_id: str) -> None:
@@ -162,11 +225,10 @@ def store_file_bytes(space_id: str, file_bytes: bytes, original_name: str) -> di
 
     n_chunks is filled in later via register_file once ingestion is done.
     """
-    if not os.path.isfile(_space_json(space_id)):
+    if not os.path.isfile(_space_json_path(space_id)):
         raise KeyError(f"Space '{space_id}' not found")
     file_id = _new_id()
-    safe = _safe_name(original_name)
-    stored_name = f"{file_id}__{safe}"
+    stored_name = _unique_media_name(space_id, original_name)
     with _lock:
         os.makedirs(_media_dir(space_id), exist_ok=True)
         with open(os.path.join(_media_dir(space_id), stored_name), "wb") as f:
@@ -192,7 +254,7 @@ def register_file(space_id: str, record: dict, n_chunks: int) -> dict:
             "added_at": _now(),
         }
         data["files"].append(entry)
-        _write_json(_space_json(space_id), data)
+        _write_json(_space_json_path(space_id), data)
     return entry
 
 
@@ -204,7 +266,7 @@ def remove_file(space_id: str, file_id: str) -> dict:
         if match is None:
             raise KeyError(f"File '{file_id}' not found in space '{space_id}'")
         data["files"] = [f for f in data["files"] if f["file_id"] != file_id]
-        _write_json(_space_json(space_id), data)
+        _write_json(_space_json_path(space_id), data)
         media_path = os.path.join(_media_dir(space_id), match["stored_name"])
         try:
             os.remove(media_path)
@@ -229,7 +291,7 @@ def _chat_path(space_id: str, chat_id: str) -> str:
 
 
 def create_chat(space_id: str, title: str = "") -> dict:
-    if not os.path.isfile(_space_json(space_id)):
+    if not os.path.isfile(_space_json_path(space_id)):
         raise KeyError(f"Space '{space_id}' not found")
     chat_id = _new_id()
     with _lock:
@@ -283,9 +345,21 @@ def delete_chat(space_id: str, chat_id: str) -> None:
             pass
 
 
+def update_chat(space_id: str, chat_id: str, title: str) -> dict:
+    title = (title or "").strip()
+    if not title:
+        raise ValueError("Chat title cannot be empty")
+    with _lock:
+        data = get_chat(space_id, chat_id)
+        data["title"] = title
+        data["updated_at"] = _now()
+        _write_json(_chat_path(space_id, chat_id), data)
+    return data
+
+
 def append_message(space_id: str, chat_id: str, role: str, content: str,
                    sources: list | None = None) -> dict:
-    """Append a message; auto-title the chat from the first user message."""
+    """Append a message. Does NOT auto-rename chats — title is set explicitly."""
     with _lock:
         data = get_chat(space_id, chat_id)
         msg = {"role": role, "content": content}
@@ -293,7 +367,5 @@ def append_message(space_id: str, chat_id: str, role: str, content: str,
             msg["sources"] = sources
         data["messages"].append(msg)
         data["updated_at"] = _now()
-        if role == "user" and data.get("title", "New chat") == "New chat":
-            data["title"] = (content[:48] + "...") if len(content) > 48 else content
         _write_json(_chat_path(space_id, chat_id), data)
     return msg

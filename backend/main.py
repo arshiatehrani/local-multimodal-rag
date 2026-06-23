@@ -200,6 +200,20 @@ def delete_chat(space_id: str, chat_id: str):
     return {"status": "ok"}
 
 
+class UpdateChatRequest(BaseModel):
+    title: str
+
+
+@app.patch("/spaces/{space_id}/chats/{chat_id}")
+def update_chat(space_id: str, chat_id: str, req: UpdateChatRequest):
+    try:
+        return spaces.update_chat(space_id, chat_id, req.title)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 # --------------------------------------------------------------------------- #
 # Prompt library (reusable system prompts, shared across spaces)
 # --------------------------------------------------------------------------- #

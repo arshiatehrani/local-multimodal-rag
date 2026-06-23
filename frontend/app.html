@@ -59,7 +59,8 @@
   .list-item .li-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .list-item .li-sub { font-size: 11px; color: var(--text-dim); }
   .list-item .del { opacity: 0; color: var(--text-dim); font-size: 14px; padding: 0 4px; border-radius: 4px; }
-  .list-item:hover .del { opacity: 1; }
+  .list-item .ren { opacity: 0; color: var(--text-dim); font-size: 13px; padding: 0 4px; border-radius: 4px; }
+  .list-item:hover .del, .list-item:hover .ren { opacity: 1; }
   .list-item .del:hover { color: var(--danger); }
   .muted-note { color: var(--text-dim); font-size: 12px; padding: 10px; text-align: center; }
   .sidebar-footer { margin-top: 12px; font-size: 11px; color: var(--text-dim); padding: 8px; border-top: 1px solid var(--border); }
@@ -68,7 +69,8 @@
   .status-pill.online .dot { background: var(--accent); }
 
   /* Main */
-  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  #workspace { flex: 1; display: flex; flex-direction: column; min-height: 0; }
   .topbar { padding: 18px 28px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 20px; }
   .topbar h1 { font-size: 17px; font-weight: 600; }
   .topbar h1 small { display: block; color: var(--text-dim); font-weight: 400; font-size: 12px; margin-top: 2px; }
@@ -139,10 +141,11 @@
   .lib-row .mini.danger:hover { border-color: var(--danger); color: var(--danger); }
 
   /* Chat view */
-  #view-chat { flex-direction: row; }
-  .chats-rail { width: 220px; border-right: 1px solid var(--border); display: flex; flex-direction: column; padding: 14px 10px; flex-shrink: 0; }
-  .chat-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-  .chat-scroll { flex: 1; overflow-y: auto; padding: 26px 28px; }
+  #view-chat { flex: 1; min-height: 0; }
+  #view-chat.active { flex-direction: row !important; }
+  .chats-rail { width: 220px; border-right: 1px solid var(--border); display: flex; flex-direction: column; padding: 14px 10px; flex-shrink: 0; min-height: 0; }
+  .chat-main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+  .chat-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 26px 28px; }
   .empty-state { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--text-dim); gap: 8px; }
   .empty-state .icon { font-size: 40px; opacity: .6; }
   .msg { max-width: 760px; margin: 0 auto 22px; display: flex; }
@@ -150,6 +153,9 @@
   .bubble { padding: 12px 16px; border-radius: 14px; line-height: 1.55; white-space: pre-wrap; word-wrap: break-word; max-width: 80%; }
   .msg.user .bubble { background: var(--user-bubble); color: #04201d; border-bottom-right-radius: 4px; font-weight: 500; }
   .msg.assistant .bubble { background: var(--surface); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+  .msg.assistant .bubble strong { font-weight: 700; }
+  .msg.assistant .bubble ul { margin: 8px 0 8px 20px; }
+  .msg.assistant .bubble li { margin: 4px 0; }
   .cursor { display: inline-block; width: 8px; height: 16px; background: var(--accent); margin-left: 2px; vertical-align: text-bottom; animation: blink 1s steps(2) infinite; }
   @keyframes blink { 50% { opacity: 0; } }
 
@@ -159,7 +165,8 @@
   details.sources-panel summary::-webkit-details-marker { display: none; }
   details.sources-panel summary:hover { color: var(--text); }
   .source-grid { display: flex; flex-wrap: wrap; gap: 12px; padding: 4px 14px 16px; }
-  .source-card { width: 130px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .source-card { width: 130px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; cursor: pointer; transition: border-color .15s ease; }
+  .source-card:hover { border-color: var(--accent); }
   .source-card img { width: 100%; height: 90px; object-fit: cover; display: block; background: #000; }
   .source-card .meta { padding: 8px; font-size: 11px; }
   .source-card .meta .fn { font-weight: 500; word-break: break-all; }
@@ -182,7 +189,21 @@
   }
   button.send:hover { background: var(--accent-dim); color: #d6fffb; }
   button.send:disabled { opacity: .5; cursor: not-allowed; }
+
+  /* PDF viewer modal */
+  .pdf-modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.85); z-index: 1000; flex-direction: column; }
+  .pdf-modal.open { display: flex; }
+  .pdf-toolbar { display: flex; align-items: center; gap: 12px; padding: 12px 18px; background: var(--surface); border-bottom: 1px solid var(--border); }
+  .pdf-toolbar .title { flex: 1; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pdf-toolbar button { background: var(--surface-2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 6px 12px; cursor: pointer; font-family: inherit; }
+  .pdf-toolbar button:hover { border-color: var(--accent); color: var(--accent); }
+  .pdf-body { flex: 1; overflow: auto; display: flex; justify-content: center; padding: 20px; position: relative; }
+  .pdf-page-wrap { position: relative; display: inline-block; }
+  .pdf-page-wrap canvas { display: block; box-shadow: 0 4px 24px rgba(0,0,0,.5); }
+  .pdf-highlight-layer { position: absolute; inset: 0; pointer-events: none; }
+  .pdf-highlight-layer .hl { position: absolute; background: rgba(255, 230, 0, .45); border-radius: 2px; }
 </style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 </head>
 <body>
   <!-- SPACES SIDEBAR -->
@@ -289,14 +310,49 @@
     </div>
   </main>
 
+  <div class="pdf-modal" id="pdfModal">
+    <div class="pdf-toolbar">
+      <span class="title" id="pdfTitle">Document</span>
+      <button type="button" id="pdfPrev">Prev</button>
+      <span id="pdfPageInfo">1 / 1</span>
+      <button type="button" id="pdfNext">Next</button>
+      <button type="button" id="pdfClose">Close</button>
+    </div>
+    <div class="pdf-body" id="pdfBody">
+      <div class="pdf-page-wrap" id="pdfPageWrap">
+        <canvas id="pdfCanvas"></canvas>
+        <div class="pdf-highlight-layer" id="pdfHlLayer"></div>
+      </div>
+    </div>
+  </div>
+
 <script>
 const API = "http://127.0.0.1:8000";
 const SUPPORTED = [".pdf",".png",".jpg",".jpeg",".webp",".bmp",".tiff",".mp4",".mov",".avi",".mkv"];
+const STORAGE_KEY = "multimodal_rag_state";
 
-const state = { spaceId: null, space: null, chatId: null, streaming: false };
+const state = { spaceId: null, space: null, chatId: null, streaming: false, tab: "files" };
+
+if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc =
+  "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+}
+function renderMarkdown(text) {
+  if (!text) return "";
+  let s = escapeHtml(text);
+  s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  s = s.replace(/\*(.+?)\*/g, "<em>$1</em>");
+  s = s.replace(/^- (.+)$/gm, "<li>$1</li>");
+  s = s.replace(/(<li>[\s\S]*?<\/li>)+/g, m => `<ul>${m}</ul>`);
+  s = s.replace(/\n/g, "<br>");
+  return s;
+}
+function persistState() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify({
+    spaceId: state.spaceId, chatId: state.chatId, tab: state.tab,
+  }));
 }
 function kindIcon(kind) {
   return ({ pdf:"\uD83D\uDCC4", image:"\uD83D\uDDBC\uFE0F", video:"\uD83C\uDFAC" }[kind]) || "\uD83D\uDCCE";
@@ -322,8 +378,8 @@ async function checkHealth() {
         const nErr = s.errors ? Object.keys(s.errors).length : 0;
         if (s.ready) txt.textContent = "models ready";
         else if (nErr) txt.textContent = `load error (${nErr}) - see terminal`;
-        else if (s.count === 0) txt.textContent = "warming embedder...";
-        else if (s.count < s.total) txt.textContent = `${s.count}/${s.total} ready (more on first chat)`;
+        else if (s.count === 0) txt.textContent = "loading models 0/3...";
+        else if (s.count < s.total) txt.textContent = `loading models ${s.count}/${s.total}...`;
         else txt.textContent = "models ready";
       } catch { txt.textContent = "backend online"; }
     } else {
@@ -354,11 +410,26 @@ async function loadSpaces() {
     el.className = "list-item" + (s.id === state.spaceId ? " active" : "");
     el.innerHTML = `<span class="li-name"></span>
       <span class="li-sub">${s.n_files}</span>
+      <span class="ren" title="Rename">&#9998;</span>
       <span class="del" title="Delete space">&#10005;</span>`;
     el.querySelector(".li-name").textContent = s.name;
     el.addEventListener("click", e => {
-      if (e.target.classList.contains("del")) return;
+      if (e.target.classList.contains("del") || e.target.classList.contains("ren")) return;
       selectSpace(s.id);
+    });
+    el.querySelector(".ren").addEventListener("click", async e => {
+      e.stopPropagation();
+      const newName = prompt("Rename space:", s.name);
+      if (newName === null || !newName.trim()) return;
+      await fetch(`${API}/spaces/${s.id}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newName.trim() }),
+      });
+      if (state.spaceId === s.id && state.space) state.space.name = newName.trim();
+      loadSpaces();
+      if (state.spaceId === s.id) {
+        document.getElementById("spaceTitle").childNodes[0].textContent = newName.trim() + " ";
+      }
     });
     el.querySelector(".del").addEventListener("click", async e => {
       e.stopPropagation();
@@ -388,11 +459,14 @@ document.getElementById("welcomeNewBtn").addEventListener("click", createSpace);
 function showWelcome() {
   document.getElementById("welcome").style.display = "flex";
   document.getElementById("workspace").style.display = "none";
+  state.spaceId = null;
+  state.chatId = null;
+  persistState();
 }
 
-async function selectSpace(id) {
+async function selectSpace(id, opts = {}) {
   state.spaceId = id;
-  state.chatId = null;
+  if (!opts.keepChat) state.chatId = null;
   try {
     const r = await fetch(`${API}/spaces/${id}`);
     state.space = await r.json();
@@ -406,15 +480,19 @@ async function selectSpace(id) {
   document.getElementById("instrText").value = state.space.system_prompt || "";
   document.getElementById("instrHint").textContent = "";
   loadPrompts();
-  switchTab("files");
-  resetChatView();
+  if (!opts.keepTab) switchTab(opts.tab || state.tab || "files");
+  else if (opts.tab) switchTab(opts.tab);
+  if (!opts.keepChat) resetChatView();
+  persistState();
 }
 
 /* ---------- Tabs ---------- */
 function switchTab(view) {
+  state.tab = view;
   document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.dataset.view === view));
   document.querySelectorAll(".view").forEach(v => v.classList.remove("active"));
   document.getElementById("view-" + view).classList.add("active");
+  persistState();
 }
 document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () => switchTab(t.dataset.view)));
 
@@ -570,8 +648,11 @@ const sendBtn = document.getElementById("sendBtn");
 
 document.getElementById("newChatBtn").addEventListener("click", async () => {
   if (!state.spaceId) return;
+  const title = prompt("Name this chat:", "New chat");
+  if (title === null) return;
   const r = await fetch(`${API}/spaces/${state.spaceId}/chats`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}),
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title: title.trim() || "New chat" }),
   });
   const chat = await r.json();
   await loadChats();
@@ -589,9 +670,24 @@ async function loadChats() {
   for (const c of chats) {
     const el = document.createElement("div");
     el.className = "list-item" + (c.id === state.chatId ? " active" : "");
-    el.innerHTML = `<span class="li-name"></span><span class="del" title="Delete chat">&#10005;</span>`;
+    el.innerHTML = `<span class="li-name"></span>
+      <span class="ren" title="Rename">&#9998;</span>
+      <span class="del" title="Delete chat">&#10005;</span>`;
     el.querySelector(".li-name").textContent = c.title;
-    el.addEventListener("click", e => { if (e.target.classList.contains("del")) return; selectChat(c.id); });
+    el.addEventListener("click", e => {
+      if (e.target.classList.contains("del") || e.target.classList.contains("ren")) return;
+      selectChat(c.id);
+    });
+    el.querySelector(".ren").addEventListener("click", async e => {
+      e.stopPropagation();
+      const newTitle = prompt("Rename chat:", c.title);
+      if (newTitle === null || !newTitle.trim()) return;
+      await fetch(`${API}/spaces/${state.spaceId}/chats/${c.id}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: newTitle.trim() }),
+      });
+      loadChats();
+    });
     el.querySelector(".del").addEventListener("click", async e => {
       e.stopPropagation();
       await fetch(`${API}/spaces/${state.spaceId}/chats/${c.id}`, { method: "DELETE" });
@@ -611,49 +707,125 @@ function resetChatView() {
 async function selectChat(id) {
   state.chatId = id;
   loadChats();
+  switchTab("chat");
   let chat;
   try {
     const r = await fetch(`${API}/spaces/${state.spaceId}/chats/${id}`);
     chat = await r.json();
   } catch { return; }
   chatScroll.innerHTML = "";
-  if (!chat.messages || !chat.messages.length) { resetChatView(); }
-  for (const m of (chat.messages || [])) {
-    addBubble(m.role, m.content);
+  if (!chat.messages || !chat.messages.length) { resetChatView(); persistState(); return; }
+  for (const m of chat.messages) {
+    addBubble(m.role, m.content, m.role === "assistant");
     if (m.role === "assistant" && m.sources) renderSources(m.sources);
   }
+  persistState();
 }
 
-function addBubble(role, text) {
+function addBubble(role, text, asMarkdown) {
   const empty = document.getElementById("emptyState");
   if (empty) empty.remove();
   const wrap = document.createElement("div");
   wrap.className = "msg " + role;
   const bubble = document.createElement("div");
   bubble.className = "bubble";
-  bubble.textContent = text || "";
+  if (role === "assistant" && asMarkdown) bubble.innerHTML = renderMarkdown(text || "");
+  else bubble.textContent = text || "";
   wrap.appendChild(bubble);
   chatScroll.appendChild(wrap);
   chatScroll.scrollTop = chatScroll.scrollHeight;
   return bubble;
 }
 
+/* ---------- PDF source viewer ---------- */
+let pdfDoc = null, pdfPageNum = 1, pdfHighlightText = "";
+
+async function openPdfSource(source) {
+  if (!source.file_id || !state.spaceId || !window.pdfjsLib) {
+    window.open(`${API}/spaces/${state.spaceId}/files/${source.file_id}/raw`, "_blank");
+    return;
+  }
+  const url = `${API}/spaces/${state.spaceId}/files/${source.file_id}/raw`;
+  pdfHighlightText = (source.text || "").trim().slice(0, 200);
+  pdfPageNum = parseInt(source.page, 10) || 1;
+  document.getElementById("pdfTitle").textContent = source.filename || "Document";
+  document.getElementById("pdfModal").classList.add("open");
+  pdfDoc = await pdfjsLib.getDocument(url).promise;
+  await renderPdfPage();
+}
+
+async function renderPdfPage() {
+  if (!pdfDoc) return;
+  const page = await pdfDoc.getPage(pdfPageNum);
+  const canvas = document.getElementById("pdfCanvas");
+  const ctx = canvas.getContext("2d");
+  const scale = 1.4;
+  const viewport = page.getViewport({ scale });
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
+  await page.render({ canvasContext: ctx, viewport }).promise;
+  document.getElementById("pdfPageInfo").textContent = `${pdfPageNum} / ${pdfDoc.numPages}`;
+
+  const hlLayer = document.getElementById("pdfHlLayer");
+  hlLayer.innerHTML = "";
+  if (!pdfHighlightText) return;
+  const textContent = await page.getTextContent();
+  const needle = pdfHighlightText.replace(/\s+/g, " ").slice(0, 80).toLowerCase();
+  for (const item of textContent.items) {
+    const t = (item.str || "").trim();
+    if (!t || t.length < 4) continue;
+    if (!needle.includes(t.toLowerCase()) && !t.toLowerCase().includes(needle.slice(0, 30))) continue;
+    const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
+    const h = Math.sqrt(tx[2] * tx[2] + tx[3] * tx[3]);
+    const w = item.width * scale;
+    const div = document.createElement("div");
+    div.className = "hl";
+    div.style.left = `${tx[4]}px`;
+    div.style.top = `${tx[5] - h}px`;
+    div.style.width = `${w}px`;
+    div.style.height = `${h + 2}px`;
+    hlLayer.appendChild(div);
+  }
+}
+
+document.getElementById("pdfClose").addEventListener("click", () => {
+  document.getElementById("pdfModal").classList.remove("open");
+  pdfDoc = null;
+});
+document.getElementById("pdfPrev").addEventListener("click", async () => {
+  if (pdfDoc && pdfPageNum > 1) { pdfPageNum--; await renderPdfPage(); }
+});
+document.getElementById("pdfNext").addEventListener("click", async () => {
+  if (pdfDoc && pdfPageNum < pdfDoc.numPages) { pdfPageNum++; await renderPdfPage(); }
+});
+
 function renderSources(sources) {
   if (!sources || !sources.length) return;
   const wrap = document.createElement("div");
   wrap.className = "sources";
-  const cards = sources.map(s => {
-    const img = s.thumbnail ? `<img src="data:image/jpeg;base64,${s.thumbnail}" alt="source" />` : "";
-    return `<div class="source-card">${img}
-      <div class="meta">
-        <div class="fn">${escapeHtml(s.filename)}</div>
-        <div class="pg">page ${escapeHtml(s.page)}</div>
-        <span class="badge">${escapeHtml(s.modality)}</span>
-      </div></div>`;
-  }).join("");
-  wrap.innerHTML = `<details class="sources-panel">
-    <summary>&#9656; Sources (${sources.length})</summary>
-    <div class="source-grid">${cards}</div></details>`;
+  wrap.innerHTML = `<details class="sources-panel" open>
+    <summary>&#9656; Sources (${sources.length}) — click to open</summary>
+    <div class="source-grid"></div></details>`;
+  const grid = wrap.querySelector(".source-grid");
+  for (const s of sources) {
+    const card = document.createElement("div");
+    card.className = "source-card";
+    card.title = "Open in viewer";
+    if (s.thumbnail) {
+      const img = document.createElement("img");
+      img.src = `data:image/jpeg;base64,${s.thumbnail}`;
+      img.alt = "source";
+      card.appendChild(img);
+    }
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.innerHTML = `<div class="fn">${escapeHtml(s.filename)}</div>
+      <div class="pg">page ${escapeHtml(s.page)}</div>
+      <span class="badge">${escapeHtml(s.modality)}</span>`;
+    card.appendChild(meta);
+    card.addEventListener("click", () => openPdfSource(s));
+    grid.appendChild(card);
+  }
   chatScroll.appendChild(wrap);
   chatScroll.scrollTop = chatScroll.scrollHeight;
 }
@@ -673,14 +845,16 @@ async function sendMessage() {
 
   // Auto-create a chat if none is active.
   if (!state.chatId) {
+    const title = prompt("Name this chat:", query.slice(0, 48));
     const r = await fetch(`${API}/spaces/${state.spaceId}/chats`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}),
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: (title || query.slice(0, 48)).trim() || "New chat" }),
     });
     state.chatId = (await r.json()).id;
     await loadChats();
   }
 
-  addBubble("user", query);
+  addBubble("user", query, false);
   chatInput.value = "";
   chatInput.style.height = "auto";
 
@@ -688,7 +862,7 @@ async function sendMessage() {
   sendBtn.disabled = true;
   chatInput.disabled = true;
 
-  const bubble = addBubble("assistant", "");
+  const bubble = addBubble("assistant", "", false);
   const cursor = document.createElement("span");
   cursor.className = "cursor";
   bubble.appendChild(cursor);
@@ -727,10 +901,12 @@ async function sendMessage() {
           pendingSources = data.sources;
         } else if (data.type === "done") {
           cursor.remove();
+          bubble.innerHTML = renderMarkdown(answer);
         }
       }
     }
     cursor.remove();
+    if (!bubble.innerHTML && answer) bubble.innerHTML = renderMarkdown(answer);
     if (pendingSources) renderSources(pendingSources);
     loadChats();  // refresh title/order after first message
   } catch (err) {
@@ -745,7 +921,18 @@ async function sendMessage() {
 }
 
 /* ---------- Init ---------- */
-loadSpaces();
+async function init() {
+  await loadSpaces();
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+    if (saved.spaceId) {
+      await selectSpace(saved.spaceId, { keepTab: true, tab: saved.tab, keepChat: true });
+      if (saved.tab) switchTab(saved.tab);
+      if (saved.chatId) await selectChat(saved.chatId);
+    }
+  } catch {}
+}
+init();
 </script>
 </body>
 </html>
