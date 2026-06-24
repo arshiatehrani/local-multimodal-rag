@@ -26,6 +26,50 @@ SPACES_DIR = os.environ.get("SPACES_DIR", os.path.join(_PROJECT_ROOT, "spaces"))
 # Serialises metadata read-modify-write so concurrent requests can't corrupt it.
 _lock = threading.RLock()
 
+# In-memory index to make directory lookups O(1)
+_space_dir_cache: dict[str, str] = {}
+_chat_path_cache: dict[tuple[str, str], str] = {}
+_cache_initialized = False
+
+
+def _ensure_cache():
+    global _cache_initialized
+    if _cache_initialized:
+        return
+    with _lock:
+        if _cache_initialized:
+            return
+        _space_dir_cache.clear()
+        _chat_path_cache.clear()
+        if not os.path.isdir(SPACES_DIR):
+            _cache_initialized = True
+            return
+        for entry in os.listdir(SPACES_DIR):
+            space_dir = os.path.join(SPACES_DIR, entry)
+            meta = os.path.join(space_dir, "space.json")
+            if not os.path.isfile(meta):
+                continue
+            try:
+                data = _read_json(meta)
+                sid = data.get("id")
+                if sid:
+                    _space_dir_cache[sid] = space_dir
+                    cdir = os.path.join(space_dir, "chats")
+                    if os.path.isdir(cdir):
+                        for fn in os.listdir(cdir):
+                            if fn.endswith(".json"):
+                                path = os.path.join(cdir, fn)
+                                try:
+                                    cdata = _read_json(path)
+                                    cid = cdata.get("id")
+                                    if cid:
+                                        _chat_path_cache[(sid, cid)] = path
+                                except Exception:
+                                    pass
+            except Exception:
+                pass
+        _cache_initialized = True
+
 
 # --------------------------------------------------------------------------- #
 # Helpers
@@ -107,11 +151,17 @@ def _unique_chat_filename(space_id: str, title: str, chat_id: str) -> str:
 
 def _find_chat_path(space_id: str, chat_id: str) -> str | None:
     """Locate a chat JSON file by its stable id (supports legacy uuid.json names)."""
+    _ensure_cache()
+    cached = _chat_path_cache.get((space_id, chat_id))
+    if cached and os.path.isfile(cached):
+        return cached
+
     cdir = _chats_dir(space_id)
     if not os.path.isdir(cdir):
         return None
     legacy = os.path.join(cdir, f"{chat_id}.json")
     if os.path.isfile(legacy):
+        _chat_path_cache[(space_id, chat_id)] = legacy
         return legacy
     for fn in os.listdir(cdir):
         if not fn.endswith(".json"):
@@ -122,6 +172,7 @@ def _find_chat_path(space_id: str, chat_id: str) -> str | None:
         except (OSError, json.JSONDecodeError):
             continue
         if data.get("id") == chat_id:
+            _chat_path_cache[(space_id, chat_id)] = path
             return path
     return None
 
@@ -141,14 +192,21 @@ def _sync_chat_file(space_id: str, data: dict, path: str) -> str:
             desired_path = os.path.join(_chats_dir(space_id), desired)
         _write_json(path, data)
         os.replace(path, desired_path)
+        _chat_path_cache[(space_id, chat_id)] = desired_path
         return desired_path
 
     _write_json(path, data)
+    _chat_path_cache[(space_id, chat_id)] = path
     return path
 
 
 def _find_space_dir(space_id: str) -> str | None:
     """Locate a space folder by its stable id (works for old UUID folder names too)."""
+    _ensure_cache()
+    cached = _space_dir_cache.get(space_id)
+    if cached and os.path.isdir(cached):
+        return cached
+
     if not os.path.isdir(SPACES_DIR):
         return None
     for entry in os.listdir(SPACES_DIR):
@@ -160,7 +218,9 @@ def _find_space_dir(space_id: str) -> str | None:
         except (OSError, json.JSONDecodeError):
             continue
         if data.get("id") == space_id:
-            return os.path.join(SPACES_DIR, entry)
+            res = os.path.join(SPACES_DIR, entry)
+            _space_dir_cache[space_id] = res
+            return res
     return None
 
 
@@ -251,6 +311,7 @@ def create_space(name: str) -> dict:
             "files": [],
         }
         _write_json(os.path.join(root, "space.json"), data)
+        _space_dir_cache[space_id] = root
     return data
 
 
@@ -268,7 +329,13 @@ def update_space(space_id: str, name: str | None = None,
                 new_dir = os.path.join(SPACES_DIR, new_folder)
                 if new_dir != old_dir:
                     os.rename(old_dir, new_dir)
+                    # Update all cached chat paths that reside inside this space
+                    for (sid, cid), path in list(_chat_path_cache.items()):
+                        if sid == space_id:
+                            rel = os.path.relpath(path, old_dir)
+                            _chat_path_cache[(sid, cid)] = os.path.normpath(os.path.join(new_dir, rel))
                 data["folder"] = new_folder
+                _space_dir_cache[space_id] = new_dir
         if system_prompt is not None:
             data["system_prompt"] = system_prompt
         _write_json(_space_json_path(space_id), data)
@@ -310,6 +377,10 @@ def delete_space(space_id: str) -> None:
         d = _space_dir(space_id)
         if os.path.isdir(d):
             shutil.rmtree(d, ignore_errors=True)
+            _space_dir_cache.pop(space_id, None)
+            for (sid, cid) in list(_chat_path_cache.keys()):
+                if sid == space_id:
+                    _chat_path_cache.pop((sid, cid), None)
 
 
 # --------------------------------------------------------------------------- #
@@ -411,7 +482,9 @@ def create_chat(space_id: str, title: str = "") -> dict:
             "messages": [],
         }
         fn = _unique_chat_filename(space_id, clean_title, chat_id)
-        _write_json(os.path.join(_chats_dir(space_id), fn), data)
+        path = os.path.join(_chats_dir(space_id), fn)
+        _write_json(path, data)
+        _chat_path_cache[(space_id, chat_id)] = path
     return data
 
 
@@ -459,6 +532,7 @@ def delete_chat(space_id: str, chat_id: str) -> None:
             os.remove(_chat_path(space_id, chat_id))
         except OSError:
             pass
+        _chat_path_cache.pop((space_id, chat_id), None)
 
 
 def update_chat(space_id: str, chat_id: str, title: str) -> dict:

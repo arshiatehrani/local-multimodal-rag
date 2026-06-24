@@ -37,6 +37,8 @@ PRELOAD_MODELS = os.environ.get("PRELOAD_MODELS", "all").lower()
 _SINGLE_MODEL_VRAM_WARN_GB = float(os.environ.get("SINGLE_MODEL_VRAM_WARN_GB", "2.5"))
 # Need at least this much free before attempting another load while others resident.
 _LOAD_HEADROOM_GB = float(os.environ.get("LOAD_HEADROOM_GB", "1.8"))
+# Timeout (seconds) for a single model load — prevents indefinite hangs.
+MODEL_LOAD_TIMEOUT = float(os.environ.get("MODEL_LOAD_TIMEOUT", "600"))
 
 
 def _device() -> str:
@@ -276,6 +278,8 @@ class ModelManager:
         self._progress_task: asyncio.Task | None = None
         self._load_waiters: dict[str, asyncio.Event] = {}
         self._load_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="model-load")
+        # Serialise GPU inference across requests — prevents concurrent CUDA OOM.
+        self._inference_sem = asyncio.Semaphore(1)
 
     def _set_loading_pct(self, pct: int) -> None:
         if self._loading is not None:
@@ -409,7 +413,16 @@ class ModelManager:
 
         try:
             try:
-                model = await loop.run_in_executor(self._load_executor, _run_loader)
+                try:
+                    model = await asyncio.wait_for(
+                        loop.run_in_executor(self._load_executor, _run_loader),
+                        timeout=MODEL_LOAD_TIMEOUT,
+                    )
+                except asyncio.TimeoutError:
+                    raise RuntimeError(
+                        f"{name}: model load timed out after {MODEL_LOAD_TIMEOUT}s. "
+                        "Check disk I/O, network, or increase MODEL_LOAD_TIMEOUT."
+                    )
                 async with self._lock:
                     self._models[name] = model
                     self._errors.pop(name, None)
@@ -566,18 +579,25 @@ class _ModelContext:
         self._name = name
 
     async def __aenter__(self):
+        await self._manager._inference_sem.acquire()
         try:
             await self._manager._load_one(self._name)
         except Exception as e:
+            self._manager._inference_sem.release()
             self._manager._errors[self._name] = repr(e)
             raise
         async with self._manager._lock:
             return self._manager._models[self._name]
 
     async def __aexit__(self, exc_type, exc, tb):
-        if exc_type is not None:
-            async with self._manager._lock:
-                self._manager._evict_one(self._name)
+        try:
+            # Only evict on OOM / CUDA errors — transient inference failures
+            # (bad input, shape mismatch) should NOT force a costly reload.
+            if exc_type is not None and _is_oom(exc):
+                async with self._manager._lock:
+                    self._manager._evict_one(self._name)
+        finally:
+            self._manager._inference_sem.release()
         return False
 
 

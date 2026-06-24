@@ -1,6 +1,6 @@
 """Tests for meta-question detection (skip RAG path). Run: python test_meta_query.py"""
 
-from query import _is_conversational_meta, _meta_fast_answer
+from meta_detect import is_conversational_meta, meta_fast_answer
 
 META = [
     "\u0641\u0627\u0631\u0633\u06cc \u0647\u0645 \u0645\u06cc\u062a\u0648\u0646\u06cc \u062d\u0631\u0641 \u0628\u0632\u0646\u06cc\u061f",
@@ -22,24 +22,24 @@ NOT_META = [
     "what is the due date",
 ]
 
-def main():
+def test_meta_detection():
     fails = 0
     for q in META:
-        if not _is_conversational_meta(q):
+        if not is_conversational_meta(q):
             print("FAIL should be meta:", q[:40])
             fails += 1
     for q in NOT_META:
-        if _is_conversational_meta(q):
+        if is_conversational_meta(q):
             print("FAIL should NOT be meta:", q)
             fails += 1
 
-    fa = _meta_fast_answer("\u0641\u0627\u0631\u0633\u06cc \u0647\u0645 \u0645\u06cc\u062a\u0648\u0646\u06cc \u062d\u0631\u0641 \u0628\u0632\u0646\u06cc\u061f")
+    fa = meta_fast_answer("\u0641\u0627\u0631\u0633\u06cc \u0647\u0645 \u0645\u06cc\u062a\u0648\u0646\u06cc \u062d\u0631\u0641 \u0628\u0632\u0646\u06cc\u061f")
     if not fa or "\u0641\u0627\u0631\u0633\u06cc" not in fa:
         print("FAIL fast answer for Persian capability question")
         fails += 1
 
-    print("failures:", fails)
-    return 1 if fails else 0
+    assert fails == 0
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    test_meta_detection()
+    print("ok")

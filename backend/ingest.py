@@ -238,7 +238,8 @@ def process_pdf(file_bytes: bytes, filename: str) -> tuple[list, dict | None]:
             xref = img[0]
             try:
                 base_image = doc.extract_image(xref)
-                pil_img = Image.open(io.BytesIO(base_image["image"])).convert("RGB")
+                raw_img = Image.open(io.BytesIO(base_image["image"])).convert("RGB")
+                pil_img = _cap_image(raw_img)
             except Exception:
                 continue
             items.append({
@@ -297,7 +298,8 @@ def process_pdf(file_bytes: bytes, filename: str) -> tuple[list, dict | None]:
 
 
 def process_image(file_bytes: bytes, filename: str) -> tuple[list, dict | None]:
-    pil_img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+    raw_img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+    pil_img = _cap_image(raw_img)
     return [{
         "type": "image",
         "content": pil_img,
@@ -314,10 +316,11 @@ def process_video(file_bytes: bytes, filename: str) -> tuple[list, dict | None]:
     import cv2
 
     items = []
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as f:
-        f.write(file_bytes)
-        tmp_path = f.name
+    tmp_path = None
     try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as f:
+            f.write(file_bytes)
+            tmp_path = f.name
         cap = cv2.VideoCapture(tmp_path)
         fps = cap.get(cv2.CAP_PROP_FPS) or 25
         frame_interval = max(1, int(round(fps)))  # one frame per second
@@ -327,7 +330,8 @@ def process_video(file_bytes: bytes, filename: str) -> tuple[list, dict | None]:
             if not ret:
                 break
             if frame_idx % frame_interval == 0:
-                pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                raw_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                pil_img = _cap_image(raw_img)
                 items.append({
                     "type": "image",
                     "content": pil_img,
@@ -341,10 +345,11 @@ def process_video(file_bytes: bytes, filename: str) -> tuple[list, dict | None]:
             frame_idx += 1
         cap.release()
     finally:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
     return items, None
 
 
@@ -388,7 +393,7 @@ async def ingest_file_stream(file_bytes: bytes, filename: str, space_id: str, fi
                 if item["type"] == "text":
                     encode_inputs.append(item["content"])
                 else:
-                    encode_inputs.append({"image": _cap_image(item["content"])})
+                    encode_inputs.append({"image": item["content"]})
 
             vecs = await asyncio.to_thread(
                 embedder.encode,

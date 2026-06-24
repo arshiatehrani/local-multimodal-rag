@@ -1199,9 +1199,8 @@ flowchart LR
 ### Tests
 
 ```powershell
-conda activate p
-cd backend
-python -m pytest test_meta_query.py test_char_count.py -q
+# From the project root with environment active:
+python -m pytest backend/
 ```
 
 ### Restart after code changes

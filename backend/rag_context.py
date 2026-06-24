@@ -9,11 +9,20 @@ MAX_HISTORY_TURNS = int(__import__("os").environ.get("MAX_HISTORY_TURNS", "8"))
 HISTORY_BUDGET_RATIO = 0.35  # at most 35% of window for chat history
 
 
+_NON_LATIN_RE = __import__("re").compile(r"[\u0600-\u06FF\u0750-\u077F\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7AF]")
+
+
 def estimate_tokens(text: str) -> int:
-    """Rough token count (~4 chars per token for English)."""
+    """Rough token count — ~4 chars/token for Latin, ~2 chars/token for Arabic/Persian/CJK."""
     if not text:
         return 0
-    return max(1, len(text) // 4)
+    # Sample the first 400 chars to decide the dominant script ratio.
+    sample = text[:400]
+    non_latin = len(_NON_LATIN_RE.findall(sample))
+    ratio = non_latin / max(len(sample), 1)
+    # Blend: if ≥30% non-Latin, use ~2.5 chars/token; otherwise ~4.
+    chars_per_token = 2.5 if ratio >= 0.3 else 4
+    return max(1, int(len(text) / chars_per_token))
 
 
 def _summarize_messages(messages: list) -> str:

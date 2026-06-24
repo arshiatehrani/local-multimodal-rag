@@ -6,12 +6,43 @@ saved chats. Search and chat are always scoped to a single space.
 
 import json
 import asyncio
+import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
+
+# ---- Logging ---------------------------------------------------------------
+_LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, _LOG_LEVEL, logging.INFO),
+    format="%(asctime)s  %(levelname)-5s  %(name)s  %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger("rag")
+
+# Suppress noisy per-request access logs for the health endpoint.
+class _HealthFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        if "/health" in msg or "/models/status" in msg:
+            return False
+        return True
+
+for _uv_name in ("uvicorn.access",):
+    logging.getLogger(_uv_name).addFilter(_HealthFilter())
+
+# ---- Constants -------------------------------------------------------------
+# Maximum upload size per file (bytes). Default 200 MB.
+MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(200 * 1024 * 1024)))
+# CORS origins — comma-separated list or "*" for development.
+CORS_ORIGINS = os.environ.get(
+    "CORS_ORIGINS",
+    "http://localhost:3000,http://localhost:8000,http://127.0.0.1:3000,http://127.0.0.1:8000",
+).split(",")
 
 import spaces
 import prompts
@@ -39,7 +70,7 @@ app = FastAPI(title="Multimodal RAG API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -147,6 +178,17 @@ async def upload_files(space_id: str, files: list[UploadFile] = File(...)):
 
             try:
                 contents = await file.read()
+                if len(contents) > MAX_UPLOAD_BYTES:
+                    results.append({
+                        "filename": name, "status": "error",
+                        "error": f"File exceeds {MAX_UPLOAD_BYTES // (1024*1024)} MB limit",
+                    })
+                    yield _sse({
+                        "type": "file_done", "filename": name,
+                        "status": "error",
+                        "error": f"File exceeds {MAX_UPLOAD_BYTES // (1024*1024)} MB limit",
+                    })
+                    continue
                 yield _sse({
                     "type": "progress",
                     "pct": base + int(span * 0.08),

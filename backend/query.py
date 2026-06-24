@@ -27,6 +27,13 @@ from rag_context import (
     context_status,
     context_for_turn,
 )
+from meta_detect import is_conversational_meta, meta_fast_answer
+from highlights import compute_highlight_phrases, extract_word_at_hint
+from identifiers import (
+    extract_grounded_identifiers,
+    grounded_identifiers_context,
+    fix_identifier_drift,
+)
 
 QUERY_INSTRUCTION = "Retrieve relevant documents for the query."
 RERANK_INSTRUCTION = "Retrieve images or text relevant to the user's query."
@@ -41,107 +48,7 @@ GEN_KWARGS = {
     "no_repeat_ngram_size": 4,
 }
 
-# If the query mentions document structure, always use RAG — never treat as meta.
-_DOC_TOPIC = re.compile(
-    r"\b(paragraph|page|document|assignment|part\s*\d|chapter|section|"
-    r"pdf|file|due|submit|rubric|grade|word\s+\d+|second\s+paragraph)\b",
-    re.I,
-)
 
-
-_CHITCHAT_WORDS = frozenset({
-    "hi", "hii", "hey", "heyy", "heyyy", "hello", "helloo", "yo", "sup", "howdy",
-    "greetings", "thanks", "thankyou", "ok", "okay", "cool", "nice", "great",
-    "bye", "goodbye", "morning", "evening", "afternoon",
-})
-
-
-def _is_casual_greeting(query: str) -> bool:
-    """Match hi/hey/hello variants (heyy, hiii) and other short greetings."""
-    q = query.strip().lower()
-    q = re.sub(r"[!?.…,]+$", "", q).strip()
-    if not q or len(q) > 40:
-        return False
-    compact = re.sub(r"[\s'\"]+", "", q)
-    if re.fullmatch(r"h+i+", compact) or re.fullmatch(r"h+e+y+", compact):
-        return True
-    if re.fullmatch(r"h+e+l+o+", compact):
-        return True
-    if compact in _CHITCHAT_WORDS:
-        return True
-    if re.fullmatch(r"(thanks|thankyou|goodmorning|goodevening|goodafternoon)", compact):
-        return True
-    return False
-
-
-def _is_conversational_meta(query: str) -> bool:
-    """Greetings / language-capability questions that should not use document RAG."""
-    q = query.strip()
-    if not q or len(q) > 140:
-        return False
-
-    # Document questions always go through retrieval, even if they contain "can you…"
-    if _DOC_TOPIC.search(q):
-        return False
-
-    lower = q.lower()
-
-    # Explicit language-capability (English)
-    if re.search(
-        r"(can|do)\s+you\s+(speak|write|read|understand)\s+"
-        r"(farsi|persian|arabic|english|french|spanish|german|mandarin|any\s+language)",
-        lower,
-    ):
-        return True
-    if re.search(r"(can|do)\s+you\s+(speak|understand)\s+(any\s+)?languages?\b", lower):
-        return True
-    if re.search(r"what\s+(language|languages)\b", lower):
-        return True
-
-    # Short greetings / thanks (incl. heyy, hii, yo)
-    if _is_casual_greeting(q):
-        return True
-    if re.search(r"^(hi|hello|hey|thanks|thank you)\b", lower) and len(q) < 50:
-        return True
-
-    # Persian / Farsi capability or greeting
-    if re.search(r"\b(farsi|persian|فارسی)\b", q, re.I):
-        if "?" in q or "؟" in q or re.search(r"(can|speak|talk|حرف|می)", q, re.I):
-            return True
-
-    if re.search(r"[\u0600-\u06FF]", q):
-        if re.search(r"(می[\u200c]?تون|می[\u200c]?توانی|بله|سلام|فارسی|زبان|حرف)", q):
-            if "?" in q or "؟" in q or len(q) < 70:
-                return True
-        if re.search(r"^(سلام|درود)\b", q):
-            return True
-
-    return False
-
-
-def _meta_fast_answer(query: str) -> str | None:
-    """Deterministic one-line answers for common meta questions (no RAG, no long generation)."""
-    q = query.strip()
-    if not _is_conversational_meta(q):
-        return None
-
-    has_persian = bool(re.search(r"[\u0600-\u06FF]", q))
-    if re.search(r"\b(farsi|persian|فارسی)\b", q, re.I) or (
-        has_persian and re.search(r"(می[\u200c]?تون|حرف|زبان|فارسی)", q)
-    ):
-        return "بله، می‌توانم به فارسی پاسخ دهم." if has_persian else "Yes, I can respond in Farsi/Persian."
-
-    if _is_casual_greeting(q) or re.search(r"^(hi|hello|hey)\b", q, re.I):
-        return "Hello! Ask me anything about the files in this space."
-    if re.search(r"^(thanks|thank you)\b", q, re.I):
-        return "You're welcome!"
-    if re.search(r"^(سلام|درود)\b", q):
-        return "سلام! هر سوالی دربارهٔ فایل‌های این فضا دارید بپرسید."
-
-    if re.search(r"what\s+(language|languages)", q, re.I):
-        return "I reply in whichever language you write in, including English and Persian/Farsi."
-
-    return None
 
 
 def _top_k_for_space(n_points: int, overview: bool = False) -> tuple[int, int]:
@@ -178,161 +85,7 @@ def _source_card_key(pay: dict) -> tuple:
     )
 
 
-_QUERY_STOP = frozenset({
-    "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with",
-    "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "do",
-    "does", "did", "will", "would", "could", "should", "may", "might", "must",
-    "what", "which", "who", "whom", "this", "that", "these", "those", "it", "its",
-    "about", "tell", "give", "show", "find", "from", "into", "your", "you", "me",
-    "document", "pdf", "file", "page", "paragraph", "word", "summary", "summarize",
-})
 
-
-def _normalize_text(s: str) -> str:
-    s = (s or "").lower()
-    s = re.sub(r"[\u200c\u200d]", "", s)
-    s = re.sub(r"[^\w\s\u0600-\u06FF]", " ", s)
-    return re.sub(r"\s+", " ", s).strip()
-
-
-def _query_terms(query: str) -> list[str]:
-    terms = []
-    for w in re.findall(r"[\w\u0600-\u06FF]+", query.lower()):
-        if len(w) > 2 and w not in _QUERY_STOP:
-            terms.append(w)
-    return terms
-
-
-def _extract_numbers(text: str) -> list[str]:
-    return re.findall(r"\d[\d,./:-]*\d|\d+", text or "")
-
-
-def _number_in_chunk(num: str, chunk: str) -> str | None:
-    """Return the chunk's literal spelling of a number if present."""
-    if not num or not chunk:
-        return None
-    variants = {num, num.replace(",", ""), num.replace(".", "")}
-    for v in variants:
-        if not v:
-            continue
-        m = re.search(re.escape(v), chunk)
-        if m:
-            return m.group()
-    norm_chunk = _normalize_text(chunk)
-    norm_num = _normalize_text(num)
-    if norm_num and norm_num in norm_chunk.split():
-        for tok in chunk.split():
-            if _normalize_text(tok).strip(".,;:") == norm_num:
-                return tok.strip(".,;:")
-    return None
-
-
-def _find_phrase_in_chunk(chunk: str, norm_phrase: str) -> str | None:
-    if not norm_phrase or not chunk:
-        return None
-    phrase_words = norm_phrase.split()
-    if not phrase_words:
-        return None
-    words = chunk.split()
-    norm_words = [_normalize_text(w) for w in words]
-    n = len(phrase_words)
-    for i in range(len(norm_words) - n + 1):
-        if norm_words[i:i + n] == phrase_words:
-            return " ".join(words[i:i + n])
-    if len(norm_phrase) >= 3 and norm_phrase in _normalize_text(chunk):
-        m = re.search(re.escape(norm_phrase), _normalize_text(chunk))
-        if m:
-            return m.group()
-    return None
-
-
-def _dedupe_phrases(phrases: list[str]) -> list[str]:
-    seen: set = set()
-    out = []
-    for p in phrases:
-        p = (p or "").strip()
-        if not p:
-            continue
-        key = _normalize_text(p)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(p)
-    return out
-
-
-def _compute_highlight_phrases(
-    pay: dict,
-    query: str,
-    answer: str,
-    pos_hints: dict,
-    exact_word: str | None = None,
-) -> list[str]:
-    """Pick short, precise spans to highlight — numbers, dates, answer-aligned phrases."""
-    chunk = pay.get("text", "") or ""
-    if not chunk.strip():
-        return []
-
-    phrases: list[str] = []
-
-    if exact_word:
-        found = _find_phrase_in_chunk(chunk, _normalize_text(exact_word)) or exact_word
-        if found.lower() in chunk.lower() or _normalize_text(found) in _normalize_text(chunk):
-            return [found]
-
-    hinted = _extract_word_at_hint(pay, pos_hints)
-    if hinted:
-        phrases.append(hinted)
-
-    for num in _extract_numbers(answer):
-        lit = _number_in_chunk(num, chunk)
-        if lit:
-            phrases.append(lit)
-
-    for m in re.finditer(
-        r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
-        r"Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
-        r"\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{2,4}",
-        answer,
-        re.I,
-    ):
-        lit = m.group()
-        if lit.lower() in chunk.lower():
-            phrases.append(lit)
-
-    chunk_norm = _normalize_text(chunk)
-    for sent in re.split(r"[.!?\n]+", answer):
-        sent = sent.strip()
-        if len(sent) < 10:
-            continue
-        sent_norm = _normalize_text(sent)
-        words = sent_norm.split()
-        matched = False
-        for n in range(min(10, len(words)), 1, -1):
-            if matched:
-                break
-            for i in range(len(words) - n + 1):
-                sub = " ".join(words[i:i + n])
-                if len(sub) < 6:
-                    continue
-                found = _find_phrase_in_chunk(chunk, sub)
-                if found:
-                    phrases.append(found)
-                    matched = True
-                    break
-
-    for term in _query_terms(query):
-        if term in chunk_norm:
-            found = _find_phrase_in_chunk(chunk, term)
-            if found:
-                phrases.append(found)
-
-    if not phrases and pay.get("leading_words"):
-        lead = pay["leading_words"][:80].strip()
-        if lead:
-            phrases.append(lead)
-
-    return _dedupe_phrases(phrases)[:12]
 
 
 def _payload_to_source(pay: dict, highlight_phrases: list[str] | None = None) -> dict:
@@ -385,7 +138,7 @@ def _collect_sources(
             continue
         seen.add(key)
         pay = hit.payload if hasattr(hit, "payload") else hit
-        highlights = _compute_highlight_phrases(pay, query, answer, pos_hints, exact_word)
+        highlights = compute_highlight_phrases(pay, query, answer, pos_hints, exact_word)
         sources.append(_payload_to_source(pay, highlights))
     return sources
 
@@ -447,94 +200,7 @@ def _format_source_header(pay: dict) -> str:
     return format_position_header(pay)
 
 
-# Letter-prefix + digit codes (course numbers, project IDs, etc.) from source text.
-_IDENTIFIER_RE = re.compile(r"\b([A-Z]{2,6})[\s\-]*(\d{2,4}[A-Z]?)\b")
-_TERM_CODE_RE = re.compile(r"\b([SWF]\d{2})\b", re.I)
 
-
-def _normalize_for_identifier_scan(text: str) -> str:
-    return (text or "").replace("\u2013", "-").replace("\u2014", "-")
-
-
-def _collect_identifiers_from_text(text: str, seen: set[str], out: list[str]) -> None:
-    text = _normalize_for_identifier_scan(text)
-    for m in _IDENTIFIER_RE.finditer(text):
-        spaced = f"{m.group(1)} {m.group(2)}"
-        compact = f"{m.group(1)}{m.group(2)}"
-        for token in (spaced, compact):
-            if token not in seen:
-                seen.add(token)
-                out.append(token)
-    for m in _TERM_CODE_RE.finditer(text):
-        token = m.group(1).upper()
-        if token not in seen:
-            seen.add(token)
-            out.append(token)
-
-
-def _extract_grounded_identifiers(hits: list, space_id: str) -> list[str]:
-    """Alphanumeric labels present in filenames and retrieved chunks (not invented)."""
-    seen: set[str] = set()
-    out: list[str] = []
-    try:
-        data = spaces.get_space(space_id)
-        for f in data.get("files", []):
-            _collect_identifiers_from_text(f.get("original_name", ""), seen, out)
-    except Exception:
-        pass
-    for hit in hits:
-        pay = hit.payload or {}
-        _collect_identifiers_from_text(pay.get("text", ""), seen, out)
-        _collect_identifiers_from_text(pay.get("filename", ""), seen, out)
-    return out
-
-
-def _grounded_identifiers_context(identifiers: list[str]) -> str:
-    if not identifiers:
-        return ""
-    lines = [
-        "[EXACT IDENTIFIERS — alphanumeric codes and labels from the documents; "
-        "copy spelling and digits verbatim; never substitute other numbers]",
-    ]
-    for token in identifiers[:40]:
-        lines.append(f"- {token}")
-    return "\n".join(lines)
-
-
-def _identifier_numbers_by_prefix(identifiers: list[str]) -> dict[str, set[str]]:
-    by_prefix: dict[str, set[str]] = {}
-    for token in identifiers:
-        m = _IDENTIFIER_RE.search(_normalize_for_identifier_scan(token))
-        if not m:
-            continue
-        by_prefix.setdefault(m.group(1), set()).add(m.group(2))
-    return by_prefix
-
-
-def _fix_identifier_drift(answer: str, identifiers: list[str]) -> str:
-    """When the model swaps digits on a known prefix (812→912), restore source forms."""
-    if not answer or not identifiers:
-        return answer
-    by_prefix = _identifier_numbers_by_prefix(identifiers)
-    if not by_prefix:
-        return answer
-
-    def repl(match: re.Match) -> str:
-        prefix, num = match.group(1), match.group(2)
-        valid = by_prefix.get(prefix)
-        if not valid or num in valid:
-            return match.group(0)
-        if len(valid) != 1:
-            return match.group(0)
-        correct = next(iter(valid))
-        original = match.group(0)
-        if re.search(rf"{re.escape(prefix)}\s+{re.escape(num)}", original):
-            return f"{prefix} {correct}"
-        if re.search(rf"{re.escape(prefix)}-{re.escape(num)}", original):
-            return f"{prefix}-{correct}"
-        return f"{prefix}{correct}"
-
-    return _IDENTIFIER_RE.sub(repl, _normalize_for_identifier_scan(answer))
 
 
 def _space_filenames_context(space_id: str) -> str:
@@ -588,48 +254,7 @@ def _position_facts_for_chunk(pay: dict) -> str:
     return " | ".join(lines)
 
 
-def _extract_word_at_hint(pay: dict, hints: dict) -> str | None:
-    """Return the exact word at a parsed position, if unambiguous."""
-    text = pay.get("text", "")
-    words = tokenize_words(text)
-    if not words:
-        return None
-    dws = pay.get("doc_word_start", pay.get("word_start", 1))
 
-    if hints.get("para_word_target") and hints.get("paragraph_index") == pay.get("paragraph_index"):
-        idx = hints["para_word_target"] - pay.get("para_word_start", 1)
-        if 0 <= idx < len(words):
-            return words[idx]
-
-    if hints.get("para_word_target") and hints.get("global_paragraph_index") == pay.get("global_paragraph_index"):
-        idx = hints["para_word_target"] - pay.get("para_word_start", 1)
-        if 0 <= idx < len(words):
-            return words[idx]
-
-    if hints.get("para_word_target") and hints.get("anchor_phrase"):
-        phrase = hints["anchor_phrase"].lower()
-        if phrase in pay.get("text", "").lower():
-            idx = hints["para_word_target"] - pay.get("para_word_start", 1)
-            if 0 <= idx < len(words):
-                return words[idx]
-
-    for key, target_key in (("doc_word_target", "doc_word_target"), ("word_target", "word_target")):
-        if hints.get(target_key):
-            idx = hints[target_key] - dws
-            if 0 <= idx < len(words):
-                return words[idx]
-
-    if hints.get("anchor_word") and hints.get("anchor_direction") == "after":
-        anchor = hints["anchor_word"].lower()
-        for i, w in enumerate(words):
-            if w.lower().strip(".,;:") == anchor and i + 1 < len(words):
-                return words[i + 1]
-    if hints.get("anchor_word") and hints.get("anchor_direction") == "before":
-        anchor = hints["anchor_word"].lower()
-        for i, w in enumerate(words):
-            if w.lower().strip(".,;:") == anchor and i > 0:
-                return words[i - 1]
-    return None
 
 
 def _build_generator_messages(
@@ -755,9 +380,9 @@ async def run_query(
     hist_msgs, hist_tokens, summarized = prepare_chat_history(history, MAX_CONTEXT_TOKENS)
 
     # Meta / conversational questions: skip document retrieval.
-    if _is_conversational_meta(user_query):
+    if is_conversational_meta(user_query):
         yield {"type": "sources", "sources": []}
-        fast = _meta_fast_answer(user_query)
+        fast = meta_fast_answer(user_query)
         if fast:
             yield {"type": "context", **context_for_turn(
                 hist_tokens, user_query, answer=fast, summarized=summarized,
@@ -880,14 +505,14 @@ async def run_query(
 
     context_parts = []
     count_fact = word_count_answer(reranked_hits, pos_hints, space_id=space_id)
-    exact_word = _extract_word_at_hint(reranked_hits[0].payload, pos_hints) if reranked_hits else None
+    exact_word = extract_word_at_hint(reranked_hits[0].payload, pos_hints) if reranked_hits else None
 
     prefix_lines = []
     filenames_context = _space_filenames_context(space_id)
     if filenames_context:
         prefix_lines.append(filenames_context)
-    grounded_ids = _extract_grounded_identifiers(packed_hits, space_id)
-    ids_context = _grounded_identifiers_context(grounded_ids)
+    grounded_ids = extract_grounded_identifiers(packed_hits, space_id)
+    ids_context = grounded_identifiers_context(grounded_ids)
     if ids_context:
         prefix_lines.append(ids_context)
     stats_context = _space_stats_context(space_id)
@@ -955,7 +580,7 @@ async def run_query(
             answer_parts.append(token)
             yield {"type": "token", "text": token}
         full_answer = "".join(answer_parts)
-        full_answer = _fix_identifier_drift(full_answer, grounded_ids)
+        full_answer = fix_identifier_drift(full_answer, grounded_ids)
         if full_answer != "".join(answer_parts):
             yield {"type": "replace", "text": full_answer}
         sources = _collect_sources(

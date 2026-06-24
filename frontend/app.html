@@ -496,8 +496,28 @@
   }
   .welcome-upload:hover, .welcome-upload.drag { border-color: var(--accent); color: var(--text); }
   .welcome-upload strong { color: var(--accent); }
+  .btn-retry {
+    background: var(--surface-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    font-family: inherit;
+    margin-top: 8px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    transition: all .15s ease;
+  }
+  .btn-retry:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
 </style>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="pdf.min.js"></script>
 </head>
 <body>
   <!-- SPACES SIDEBAR -->
@@ -716,7 +736,7 @@ const state = { spaceId: null, space: null, chatId: null, streaming: false, tab:
 let cachedSpaces = [];
 
 if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc =
-  "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+  "pdf.worker.min.js";
 
 function setTheme(theme) {
   document.documentElement.setAttribute("data-theme", theme);
@@ -1095,12 +1115,12 @@ async function checkHealth() {
     if (s.ready || (s.chat_ready && !s.loading)) updateLoadStatusUI("ready", s);
     else if (nErr) updateLoadStatusUI("err", s);
     else updateLoadStatusUI("loading", s);
-    healthPollMs = s.ready ? 3000 : (s.loading ? 800 : 1500);
+    healthPollMs = s.ready ? 20000 : (s.loading ? 1500 : 10000);
   } catch {
     modelsReady = false;
     connKnown = true;
     updateLoadStatusUI("offline");
-    healthPollMs = 2000;
+    healthPollMs = 10000;
   }
 }
 
@@ -2326,8 +2346,9 @@ chatInput.addEventListener("keydown", e => {
 });
 sendBtn.addEventListener("click", sendMessage);
 
-async function sendMessage() {
-  const query = chatInput.value.trim();
+async function sendMessage(queryToRetry) {
+  const isRetry = typeof queryToRetry === "string";
+  const query = (isRetry ? queryToRetry : chatInput.value).trim();
   if (!query || state.streaming) return;
 
   if (!modelsReady) {
@@ -2353,9 +2374,11 @@ async function sendMessage() {
     return;
   }
 
-  addBubble("user", query, false);
-  chatInput.value = "";
-  chatInput.style.height = "auto";
+  if (!isRetry) {
+    addBubble("user", query, false);
+    chatInput.value = "";
+    chatInput.style.height = "auto";
+  }
 
   state.streaming = true;
   sendBtn.disabled = true;
@@ -2438,7 +2461,16 @@ async function sendMessage() {
     loaderWrap.remove();
     bubble.classList.remove("streaming");
     streamLoader.parentElement?.remove();
-    answerEl.innerHTML = (answer ? renderMarkdown(answer) + "<br><br>" : "") + escapeHtml("[Error] " + err.message);
+    answerEl.innerHTML = (answer ? renderMarkdown(answer) + "<br><br>" : "") + escapeHtml("[Error] " + err.message) + "<br>";
+    
+    const retryBtn = document.createElement("button");
+    retryBtn.className = "btn-retry";
+    retryBtn.innerHTML = "<span>&#8635;</span> Retry";
+    retryBtn.onclick = () => {
+      bubble.remove();
+      sendMessage(query);
+    };
+    answerEl.appendChild(retryBtn);
     scrollChatToBottom();
   } finally {
     state.streaming = false;
@@ -2448,6 +2480,32 @@ async function sendMessage() {
     chatInput.focus();
   }
 }
+
+// Global Keyboard Shortcuts
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    const pdfModal = document.getElementById("pdfModal");
+    if (pdfModal && pdfModal.classList.contains("open")) {
+      document.getElementById("pdfClose")?.click();
+    }
+    const spacePicker = document.getElementById("spacePickerModal");
+    if (spacePicker && spacePicker.classList.contains("open")) {
+      document.getElementById("spacePickerCancel")?.click();
+    }
+    const chatPicker = document.getElementById("chatPickerModal");
+    if (chatPicker && chatPicker.classList.contains("open")) {
+      document.getElementById("chatPickerCancel")?.click();
+    }
+  }
+  if (e.ctrlKey && e.altKey && e.key.toLowerCase() === "c") {
+    e.preventDefault();
+    document.getElementById("newChatBtn")?.click();
+  }
+  if (e.ctrlKey && e.altKey && e.key.toLowerCase() === "s") {
+    e.preventDefault();
+    document.getElementById("newSpaceBtn")?.click();
+  }
+});
 
 /* ---------- Init ---------- */
 async function init() {
