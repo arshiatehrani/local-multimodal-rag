@@ -1,7 +1,25 @@
 """Tests for unified ingest-stat query parsing (words, chars, lines, etc.)."""
 
 from positioning import parse_position
-from stat_query import parse_stat_count_hints, resolve_stat_metric
+from stat_query import (
+    parse_stat_count_hints,
+    resolve_stat_metric,
+    is_ingest_stat_eligible,
+    _is_structural_count_target,
+)
+
+
+# Content-scoped counts — must use RAG, not ingest totals (no hardcoded topic list).
+CONTENT_SCOPED_QUERIES = [
+    "what's the word count of the summary needed",
+    "no I mean the word count of the summary that we need to write about in the doc",
+    "how many words should the summary be",
+    "what is the word limit for the assignment",
+    "how many words for the report we need to write",
+    "how many words in the methodology section",
+    "word count of the deliverable",
+    "how many words in the introduction",
+]
 
 
 STAT_PHRASES = [
@@ -25,9 +43,27 @@ STAT_PHRASES = [
     ("tell me the number of commas in the text", "punct:comma", "document"),
     ("how many question marks", "punct:question_mark", "document"),
     ("how many letter s are in the document", "letter:s", "document"),
+    ("how many s characters", "letter:s", "document"),
     ("number of s's", "letter:s", "document"),
     ("document statistics for this pdf", "summary", "document"),
 ]
+
+
+def test_structural_vs_content_targets():
+    assert _is_structural_count_target("document")
+    assert _is_structural_count_target("this pdf")
+    assert _is_structural_count_target("page 3")
+    assert _is_structural_count_target("first paragraph")
+    assert not _is_structural_count_target("summary needed")
+    assert not _is_structural_count_target("methodology section")
+    assert not _is_structural_count_target("deliverable")
+
+
+def test_content_scoped_queries_skip_stat_fast_path():
+    for query in CONTENT_SCOPED_QUERIES:
+        assert not is_ingest_stat_eligible(query), query
+        h = parse_position(query)
+        assert resolve_stat_metric(h) is None, query
 
 
 def test_parse_stat_variations():
@@ -49,6 +85,11 @@ def test_third_word_in_second_paragraph_not_stat():
     assert resolve_stat_metric(h) is None
 
 
+def test_clarification_skips_stat_fast_path():
+    q = "no I mean the word count of the summary that we need to write about in the doc"
+    assert not is_ingest_stat_eligible(q)
+
+
 def test_parse_stat_count_hints_direct():
     hints: dict = {"page": 4}
     parse_stat_count_hints("how many lines on page 4", hints)
@@ -57,8 +98,11 @@ def test_parse_stat_count_hints_direct():
 
 
 if __name__ == "__main__":
+    test_structural_vs_content_targets()
+    test_content_scoped_queries_skip_stat_fast_path()
     test_parse_stat_variations()
     test_positional_word_query_not_stat_count()
     test_third_word_in_second_paragraph_not_stat()
+    test_clarification_skips_stat_fast_path()
     test_parse_stat_count_hints_direct()
     print("all stat_query tests passed")

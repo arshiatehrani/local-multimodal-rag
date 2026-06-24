@@ -55,6 +55,118 @@ _PUNCT_CHAR_NAMES: dict[str, str] = {
 
 _PUNCT_KEY_BY_CHAR = {ch: key for key, ch in PUNCTUATION_KEYS if key not in ("quote_single",)}
 
+# Heads that correspond to ingest-time structural stats (not arbitrary document topics).
+_STRUCTURAL_HEADS = frozenset({
+    "document", "file", "pdf", "text", "page", "paragraph", "line",
+    "word", "character", "char", "letter", "digit", "whitespace", "space",
+    "comma", "period", "semicolon", "colon", "mark", "apostrophe", "hyphen",
+    "quote", "paren", "parenthesis", "punctuation", "stat", "stats",
+    "statistics", "total", "all", "whole", "entire", "full", "non", "no",
+})
+for _name in _PUNCT_CHAR_NAMES:
+    _STRUCTURAL_HEADS = _STRUCTURAL_HEADS | frozenset(_name.split())
+
+_STRUCTURAL_PHRASE = re.compile(
+    r"^(?:"
+    r"(?:whole|entire|full|this|the|a|an|non[\s-]?)?"
+    r"(?:document|file|pdf|text|page|paragraph|line|word|character|char|letter|digit|whitespace|space|punctuation|statistics?)"
+    r"(?:\s+\d+)?"
+    r"|(?:first|second|third|fourth|fifth|last|\d+(?:st|nd|rd|th)?)\s+(?:page|paragraph|line)"
+    r"|(?:page|paragraph|line)\s+\d+"
+    r"|no[\s-]?space\s+characters?"
+    r"|non[\s-]?whitespace\s+characters?"
+    r")$",
+    re.I,
+)
+
+_COUNT_PREP = re.compile(
+    r"(?:"
+    r"(?:word|character|char|paragraph|line)s?\s+(?:count|limit|length)\s+"
+    r"|how\s+many\s+(?:\w+\s+)*"
+    r"|(?:number|count)\s+of\s+"
+    r")"
+    r"(?:of|for|in|about|inside|within)\s+"
+    r"(?:the\s+|this\s+|a\s+|an\s+|our\s+|your\s+)?"
+    r"(.+?)"
+    r"(?=\?|$|\.\s|\s+(?:that\b|which\b|we\b|I\b|in\s+the\s+doc\b))",
+    re.I,
+)
+
+_CLARIFICATION = re.compile(
+    r"^(?:no|nope|nah)[,!\s]+|^(?:i\s+)?(?:mean|meant)\b|\bnot\s+what\s+i\s+(?:asked|meant)\b",
+    re.I,
+)
+
+_STAT_HINT_KEYS = (
+    "stat_metric", "wants_word_count", "wants_paragraph_count",
+    "wants_char_count", "wants_total_char_count", "char_target", "char_case_insensitive",
+)
+
+
+def _clear_stat_hints(hints: dict[str, Any]) -> None:
+    for key in _STAT_HINT_KEYS:
+        hints.pop(key, None)
+
+
+def _normalize_target_phrase(phrase: str) -> str:
+    s = phrase.strip().lower()
+    s = re.sub(r"^(?:whole|entire|full|this|the|a|an|our|your)\s+", "", s)
+    s = re.sub(r"\s+", " ", s).strip(" .")
+    return s
+
+
+def _is_structural_count_target(phrase: str) -> bool:
+    """True when the count target is a file/page/paragraph/inventory dimension we store at ingest."""
+    s = _normalize_target_phrase(phrase)
+    if not s:
+        return True
+    if _STRUCTURAL_PHRASE.match(s):
+        return True
+    words = s.split()
+    if len(words) == 1:
+        head = words[0].rstrip("s")
+        return head in _STRUCTURAL_HEADS
+    if len(words) == 2 and words[0] in {"non", "no"} and "space" in words[1]:
+        return True
+    return False
+
+
+def _extract_count_targets(q: str) -> list[str]:
+    targets = [m.group(1).strip() for m in _COUNT_PREP.finditer(q)]
+    m = re.search(
+        r"\bhow\s+many\s+(?:words?|characters?|chars?|paragraphs?|lines?|digits?)\s+"
+        r"(?:should|is|are|was|were|does|do|did|will|would|can|must)\s+"
+        r"(?:the\s+|this\s+|a\s+|an\s+)?(.+?)\s+(?:be|require|need|take|have)\b",
+        q,
+        re.I,
+    )
+    if m:
+        targets.append(m.group(1).strip())
+    return targets
+
+
+def is_ingest_stat_eligible(q: str, hints: dict[str, Any] | None = None) -> bool:
+    """
+    Fast-path only when the question targets structural ingest stats.
+
+    Rule: ingest stores counts for the file shell (document/page/paragraph) and
+    character inventory (letters, punctuation, whitespace). Any count scoped via
+    of/for/in/about to a non-structural noun phrase is content inside the document
+    and must go through retrieval + the LLM.
+    """
+    if not q or not q.strip():
+        return False
+    if _CLARIFICATION.search(q.strip()):
+        return False
+    targets = _extract_count_targets(q)
+    if targets:
+        return all(_is_structural_count_target(t) for t in targets)
+    return True
+
+
+# Backward-compatible alias
+is_document_level_stat_query = is_ingest_stat_eligible
+
 
 def _is_positional_word_query(hints: dict[str, Any]) -> bool:
     return any(
@@ -96,6 +208,8 @@ def set_stat_count_scope(q: str, hints: dict[str, Any]) -> None:
 
 
 def _set_metric(hints: dict[str, Any], metric: str, q: str) -> None:
+    if not is_ingest_stat_eligible(q, hints):
+        return
     hints["stat_metric"] = metric
     set_stat_count_scope(q, hints)
     if metric == "word":
@@ -176,6 +290,10 @@ def parse_stat_count_hints(q: str, hints: dict[str, Any]) -> None:
     if m:
         _set_metric(hints, f"letter:{m.group(1)}", q)
         return
+    m = re.search(rf"\b{COUNT_LEAD}\s+([a-z])\s+characters?\b", q)
+    if m:
+        _set_metric(hints, f"letter:{m.group(1)}", q)
+        return
     if re.search(rf"\b{COUNT_LEAD}\s+letter\s+frequenc", q):
         _set_metric(hints, "summary", q)
         return
@@ -217,7 +335,6 @@ def parse_stat_count_hints(q: str, hints: dict[str, Any]) -> None:
     # Characters (total)
     if re.search(rf"\b{COUNT_LEAD}\s+(?:characters?|chars?)\b", q) or re.search(r"\bcharacter\s+count\b", q):
         _set_metric(hints, "char", q)
-        return
 
 
 def resolve_stat_metric(hints: dict[str, Any]) -> str | None:
@@ -498,8 +615,12 @@ def build_stat_count_response(space_id: str, hints: dict) -> tuple[str, list[dic
     return "\n".join(lines), sources
 
 
-def try_metadata_stat_response(space_id: str, hints: dict) -> tuple[str, list[dict]] | None:
+def try_metadata_stat_response(
+    space_id: str, hints: dict, query: str = "",
+) -> tuple[str, list[dict]] | None:
     """Fast path for ingest-stat questions — no LLM."""
+    if query and not is_ingest_stat_eligible(query, hints):
+        return None
     metric = resolve_stat_metric(hints)
     if not metric:
         return None

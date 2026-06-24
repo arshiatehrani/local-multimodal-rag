@@ -317,18 +317,27 @@ class ModelManager:
     def status(self) -> dict:
         loaded = {n: (n in self._models) for n in self._ORDER}
         used, free, total = _vram_gb()
+        # Drop stale loading state if the model is already resident.
+        if self._loading and self._loading.get("name") in self._models:
+            self._loading = None
         loading = dict(self._loading) if self._loading else None
         count = sum(loaded.values())
         total_n = len(self._ORDER)
-        if loading:
-            overall_pct = min(99, int((count * 100 + loading.get("pct", 0)) / total_n))
-        elif all(loaded.values()):
+        if all(loaded.values()):
             overall_pct = 100
+            ready = True
+            loading = None
+        elif loading:
+            overall_pct = min(99, int((count * 100 + loading.get("pct", 0)) / total_n))
+            ready = False
         else:
             overall_pct = int(count * 100 / total_n)
+            ready = False
+        chat_ready = bool(loaded.get("embedder")) and loading is None
         return {
             "loaded": loaded,
-            "ready": all(loaded.values()),
+            "ready": ready,
+            "chat_ready": chat_ready,
             "count": count,
             "total": total_n,
             "loading": loading,

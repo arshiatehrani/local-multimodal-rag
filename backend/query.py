@@ -25,6 +25,7 @@ from rag_context import (
     prepare_chat_history,
     pack_retrieval_chunks,
     context_status,
+    context_for_turn,
 )
 
 QUERY_INSTRUCTION = "Retrieve relevant documents for the query."
@@ -446,6 +447,23 @@ def _format_source_header(pay: dict) -> str:
     return format_position_header(pay)
 
 
+def _space_filenames_context(space_id: str) -> str:
+    """Exact filenames so the model does not hallucinate course codes or titles."""
+    try:
+        data = spaces.get_space(space_id)
+    except Exception:
+        return ""
+    names = [f.get("original_name", "") for f in data.get("files", []) if f.get("original_name")]
+    if not names:
+        return ""
+    lines = [
+        "[EXACT FILENAMES — copy verbatim from this list when naming a file; do not paraphrase or alter spelling]",
+    ]
+    for name in names:
+        lines.append(f"- {name}")
+    return "\n".join(lines)
+
+
 def _space_stats_context(space_id: str) -> str:
     """Authoritative per-file statistics for the generator (from space.json at ingest)."""
     try:
@@ -548,9 +566,17 @@ def _status(step: str, text: str) -> dict:
     return {"type": "status", "step": step, "text": text}
 
 
-def _stream_generate(model, processor, messages, max_new_tokens: int):
+def _cancelled(cancel: asyncio.Event | None) -> bool:
+    return cancel is not None and cancel.is_set()
+
+
+def _stream_generate(model, processor, messages, max_new_tokens: int, cancel: asyncio.Event | None = None):
     """Run model.generate in a thread; yield decoded token strings."""
-    from transformers import TextIteratorStreamer
+    from transformers import StoppingCriteria, StoppingCriteriaList, TextIteratorStreamer
+
+    class _CancelCriteria(StoppingCriteria):
+        def __call__(self, input_ids, scores, **kwargs) -> bool:
+            return _cancelled(cancel)
 
     text_input = processor.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True,
@@ -565,28 +591,38 @@ def _stream_generate(model, processor, messages, max_new_tokens: int):
         max_new_tokens=max_new_tokens,
         **GEN_KWARGS,
     )
+    if cancel is not None:
+        gen_kwargs["stopping_criteria"] = StoppingCriteriaList([_CancelCriteria()])
     thread = Thread(target=model.generate, kwargs=gen_kwargs)
     thread.start()
     for token in streamer:
+        if _cancelled(cancel):
+            break
         if token:
             yield token
-    thread.join()
+    thread.join(timeout=0.1)
 
 
-async def _async_stream_generate(model, processor, messages, max_new_tokens: int):
+async def _async_stream_generate(
+    model, processor, messages, max_new_tokens: int, cancel: asyncio.Event | None = None,
+):
     """Yield tokens without blocking the event loop so SSE flushes incrementally."""
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[str | None] = asyncio.Queue()
 
     def _producer():
         try:
-            for token in _stream_generate(model, processor, messages, max_new_tokens):
+            for token in _stream_generate(model, processor, messages, max_new_tokens, cancel=cancel):
+                if _cancelled(cancel):
+                    break
                 loop.call_soon_threadsafe(queue.put_nowait, token)
         finally:
             loop.call_soon_threadsafe(queue.put_nowait, None)
 
     Thread(target=_producer, daemon=True).start()
     while True:
+        if _cancelled(cancel):
+            break
         token = await queue.get()
         if token is None:
             break
@@ -594,7 +630,7 @@ async def _async_stream_generate(model, processor, messages, max_new_tokens: int
         await asyncio.sleep(0)
 
 
-async def _yield_text_stream(text: str):
+async def _yield_text_stream(text: str, cancel: asyncio.Event | None = None):
     """Stream a fixed string word-by-word (meta fast path)."""
     if not text:
         return
@@ -602,12 +638,21 @@ async def _yield_text_stream(text: str):
     if not parts:
         parts = [text]
     for part in parts:
+        if _cancelled(cancel):
+            return
         yield part
         await asyncio.sleep(0)
 
 
-async def run_query(user_query: str, space_id: str, chat_id: str):
+async def run_query(
+    user_query: str,
+    space_id: str,
+    chat_id: str,
+    cancel: asyncio.Event | None = None,
+):
     """Async generator yielding event dicts for the chat stream."""
+    if _cancelled(cancel):
+        return
 
     try:
         chat = spaces.get_chat(space_id, chat_id)
@@ -621,19 +666,23 @@ async def run_query(user_query: str, space_id: str, chat_id: str):
 
     # Meta / conversational questions: skip document retrieval.
     if _is_conversational_meta(user_query):
-        used = hist_tokens + estimate_tokens(user_query) + 100
         yield {"type": "sources", "sources": []}
-        yield {"type": "context", **context_status(used, summarized=summarized)}
-
         fast = _meta_fast_answer(user_query)
         if fast:
+            yield {"type": "context", **context_for_turn(
+                hist_tokens, user_query, answer=fast, summarized=summarized,
+            )}
             yield _status("prepare", "Preparing response…")
             yield _status("generate", "Generating response…")
-            async for part in _yield_text_stream(fast):
+            async for part in _yield_text_stream(fast, cancel=cancel):
                 yield {"type": "token", "text": part}
-            yield {"type": "done"}
+            if not _cancelled(cancel):
+                yield {"type": "done"}
             return
 
+        yield {"type": "context", **context_for_turn(
+            hist_tokens, user_query, extra=100, summarized=summarized,
+        )}
         yield _status("prepare", "Preparing response…")
         system_prompt = (
             "You are a helpful assistant. Answer briefly and directly in one or two sentences. "
@@ -645,42 +694,50 @@ async def run_query(user_query: str, space_id: str, chat_id: str):
         async with await manager.generator() as gen:
             yield _status("generate", "Generating response…")
             async for token in _async_stream_generate(
-                gen["model"], gen["processor"], messages, META_MAX_NEW_TOKENS,
+                gen["model"], gen["processor"], messages, META_MAX_NEW_TOKENS, cancel=cancel,
             ):
                 yield {"type": "token", "text": token}
-        yield {"type": "done"}
+        if not _cancelled(cancel):
+            yield {"type": "done"}
         return
 
     if count_points(space_id) == 0:
         yield {"type": "sources", "sources": []}
-        yield {"type": "context", **context_status(estimate_tokens(user_query))}
-        async for part in _yield_text_stream(
-            "This space has no ingested documents yet. Add files in the Ingest tab first."
-        ):
+        empty_msg = "This space has no ingested documents yet. Add files in the Ingest tab first."
+        yield {"type": "context", **context_for_turn(
+            hist_tokens, user_query, answer=empty_msg, summarized=summarized,
+        )}
+        async for part in _yield_text_stream(empty_msg, cancel=cancel):
             yield {"type": "token", "text": part}
-        yield {"type": "done"}
+        if not _cancelled(cancel):
+            yield {"type": "done"}
         return
 
     pos_hints = parse_position(user_query)
     n_points = count_points(space_id)
 
-    meta_result = try_metadata_stat_response(space_id, pos_hints)
+    meta_result = try_metadata_stat_response(space_id, pos_hints, user_query)
     if meta_result is not None:
         yield _status("search", "Searching content…")
         answer, meta_sources = meta_result
-        yield {"type": "context", **context_status(estimate_tokens(user_query))}
+        yield {"type": "context", **context_for_turn(
+            hist_tokens, user_query, answer=answer, summarized=summarized,
+        )}
         yield _status("prepare", "Preparing response…")
         yield _status("generate", "Generating response…")
-        async for part in _yield_text_stream(answer):
+        async for part in _yield_text_stream(answer, cancel=cancel):
             yield {"type": "token", "text": part}
         yield {"type": "sources", "sources": meta_sources}
-        yield {"type": "done"}
+        if not _cancelled(cancel):
+            yield {"type": "done"}
         return
 
     overview = _is_overview_query(user_query)
     top_k_retrieve, top_k_final = _top_k_for_space(n_points, overview)
 
     yield _status("embed", "Embedding query…")
+    if _cancelled(cancel):
+        return
 
     async with await manager.embedder() as embedder:
         q_vec = await asyncio.to_thread(
@@ -700,10 +757,14 @@ async def run_query(user_query: str, space_id: str, chat_id: str):
 
     if not hits:
         yield {"type": "sources", "sources": []}
-        yield {"type": "context", **context_status(estimate_tokens(user_query))}
-        async for part in _yield_text_stream("I couldn't find anything relevant in this space."):
+        miss_msg = "I couldn't find anything relevant in this space."
+        yield {"type": "context", **context_for_turn(
+            hist_tokens, user_query, answer=miss_msg, summarized=summarized,
+        )}
+        async for part in _yield_text_stream(miss_msg, cancel=cancel):
             yield {"type": "token", "text": part}
-        yield {"type": "done"}
+        if not _cancelled(cancel):
+            yield {"type": "done"}
         return
 
     if _should_skip_rerank(n_points, user_query, pos_hints):
@@ -732,6 +793,9 @@ async def run_query(user_query: str, space_id: str, chat_id: str):
     exact_word = _extract_word_at_hint(reranked_hits[0].payload, pos_hints) if reranked_hits else None
 
     prefix_lines = []
+    filenames_context = _space_filenames_context(space_id)
+    if filenames_context:
+        prefix_lines.append(filenames_context)
     stats_context = _space_stats_context(space_id)
     if stats_context:
         prefix_lines.append(stats_context)
@@ -765,8 +829,12 @@ async def run_query(user_query: str, space_id: str, chat_id: str):
             "para_words (1-indexed within the paragraph), "
             "region (header/body/footer), and exact word counts. "
             "Always prefer DOCUMENT STATISTICS and PRECISE COUNT lines over guessing. "
+            "When citing a file, use the EXACT filename from EXACT FILENAMES or SOURCE headers. "
             "If the answer is not in the context, say so clearly. "
             "Never invent dates, deadlines, word limits, or requirements — copy them exactly from the context. "
+            "When the user asks about a limit or length scoped to a specific part of the assignment "
+            "(e.g. 'word count of the …'), read the requirement from the document text — "
+            "do not substitute total document statistics. "
             "Reply in the same language the user writes in when appropriate. "
             "Keep answers concise; do not repeat the same sentence. "
             "Cite sources using filename, page, paragraph, and word positions."
@@ -784,8 +852,10 @@ async def run_query(user_query: str, space_id: str, chat_id: str):
         yield _status("generate", "Generating response…")
         answer_parts: list[str] = []
         async for token in _async_stream_generate(
-            gen["model"], gen["processor"], messages, max_tokens,
+            gen["model"], gen["processor"], messages, max_tokens, cancel=cancel,
         ):
+            if _cancelled(cancel):
+                break
             answer_parts.append(token)
             yield {"type": "token", "text": token}
         full_answer = "".join(answer_parts)
@@ -793,4 +863,5 @@ async def run_query(user_query: str, space_id: str, chat_id: str):
             packed_hits, user_query, full_answer, pos_hints, exact_word,
         )
         yield {"type": "sources", "sources": sources}
-        yield {"type": "done"}
+        if not _cancelled(cancel):
+            yield {"type": "done"}

@@ -8,7 +8,7 @@ import json
 import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
@@ -18,7 +18,9 @@ import prompts
 from qdrant_store import ensure_collection, delete_by_file, delete_by_space
 from ingest import ingest_file_stream, is_supported
 from query import run_query
+from rag_context import context_for_messages
 from model_manager import manager
+import chat_stream
 
 
 @asynccontextmanager
@@ -257,7 +259,15 @@ def create_chat(space_id: str, req: CreateChatRequest):
 @app.get("/spaces/{space_id}/chats/{chat_id}")
 def get_chat(space_id: str, chat_id: str):
     try:
-        return spaces.get_chat(space_id, chat_id)
+        chat = spaces.get_chat(space_id, chat_id)
+        chat["context"] = context_for_messages(chat.get("messages", []))
+        active = chat_stream.snapshot(space_id, chat_id)
+        if active:
+            chat["generating"] = True
+            chat["partial_answer"] = active.get("partial") or ""
+        else:
+            chat["generating"] = False
+        return chat
     except KeyError:
         raise HTTPException(status_code=404, detail="Chat not found")
 
@@ -337,7 +347,7 @@ class ChatRequest(BaseModel):
 
 
 @app.post("/chat")
-async def chat_endpoint(req: ChatRequest):
+async def chat_endpoint(req: ChatRequest, request: Request):
     # Validate up front so we can return a clean error before streaming starts.
     try:
         spaces.get_chat(req.space_id, req.chat_id)
@@ -345,17 +355,33 @@ async def chat_endpoint(req: ChatRequest):
         raise HTTPException(status_code=404, detail="Space or chat not found")
 
     async def stream():
-        spaces.append_message(req.space_id, req.chat_id, "user", req.query)
-        answer_parts, sources = [], []
-        async for ev in run_query(req.query, req.space_id, req.chat_id):
-            if ev["type"] == "token":
-                answer_parts.append(ev["text"])
-            elif ev["type"] == "sources":
-                sources = ev["sources"]
-            yield _sse(ev)
-        spaces.append_message(
-            req.space_id, req.chat_id, "assistant", "".join(answer_parts), sources
-        )
+        cancel = await chat_stream.begin(req.space_id, req.chat_id)
+        await chat_stream.set_query(req.space_id, req.chat_id, req.query)
+        answer_parts: list[str] = []
+        sources: list = []
+        completed = False
+        try:
+            spaces.append_message(req.space_id, req.chat_id, "user", req.query)
+            async for ev in run_query(req.query, req.space_id, req.chat_id, cancel=cancel):
+                if await request.is_disconnected():
+                    cancel.set()
+                    break
+                if ev["type"] == "token":
+                    answer_parts.append(ev["text"])
+                    await chat_stream.set_partial(
+                        req.space_id, req.chat_id, "".join(answer_parts),
+                    )
+                elif ev["type"] == "sources":
+                    sources = ev["sources"]
+                elif ev["type"] == "done":
+                    completed = True
+                yield _sse(ev)
+            if completed and answer_parts and not cancel.is_set():
+                spaces.append_message(
+                    req.space_id, req.chat_id, "assistant", "".join(answer_parts), sources,
+                )
+        finally:
+            await chat_stream.end(req.space_id, req.chat_id)
 
     return StreamingResponse(
         stream(),

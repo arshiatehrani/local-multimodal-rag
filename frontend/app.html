@@ -939,7 +939,7 @@ function updateContextRing(data) {
   fill.style.strokeDashoffset = String(circ * (1 - pct / 100));
   ring.classList.toggle("warn", pct >= 70 && pct < 90);
   ring.classList.toggle("full", pct >= 90);
-  label.textContent = pct >= 15 ? pct + "%" : "";
+  label.textContent = pct > 0 ? pct + "%" : "";
   const sum = data.summarized ? " (older chat summarized)" : "";
   ring.title = `Context: ${data.used_tokens} / ${data.budget_tokens} tokens (${pct}% full)${sum}`;
 }
@@ -965,6 +965,8 @@ function isSupported(name) {
 let modelsReady = false;
 let healthPollMs = 400;
 let connKnown = false;
+let chatPollTimer = null;
+let resumeStream = { answerText: null, bubble: null };
 
 const MODEL_LABELS = { embedder: "Embedder", reranker: "Reranker", generator: "Generator" };
 
@@ -1068,20 +1070,13 @@ async function checkHealth() {
     const r = await fetch(API + "/health");
     if (!r.ok) throw new Error();
     connKnown = true;
-    if (!modelsReady) {
-      try {
-        const s = await (await fetch(API + "/models/status")).json();
-        modelsReady = s.ready;
-        const nErr = s.errors ? Object.keys(s.errors).length : 0;
-        if (s.ready) updateLoadStatusUI("ready", s);
-        else if (nErr) updateLoadStatusUI("err", s);
-        else updateLoadStatusUI("loading", s);
-        healthPollMs = s.ready ? 3000 : 400;
-      } catch { updateLoadStatusUI("online"); healthPollMs = 2000; }
-    } else {
-      updateLoadStatusUI("ready", { total: 3 });
-      healthPollMs = 3000;
-    }
+    const s = await (await fetch(API + "/models/status")).json();
+    modelsReady = Boolean(s.ready || s.chat_ready);
+    const nErr = s.errors ? Object.keys(s.errors).length : 0;
+    if (s.ready || (s.chat_ready && !s.loading)) updateLoadStatusUI("ready", s);
+    else if (nErr) updateLoadStatusUI("err", s);
+    else updateLoadStatusUI("loading", s);
+    healthPollMs = s.ready ? 3000 : (s.loading ? 400 : 1500);
   } catch {
     modelsReady = false;
     connKnown = true;
@@ -1725,20 +1720,105 @@ function resetChatView() {
     <div>Start a new chat to ask questions about this space.</div></div>`;
 }
 
-async function selectChat(id) {
+function stopChatPoll() {
+  if (chatPollTimer) {
+    clearInterval(chatPollTimer);
+    chatPollTimer = null;
+  }
+}
+
+function clearResumeStream() {
+  resumeStream = { answerText: null, bubble: null };
+}
+
+function attachResumeStream(partial) {
+  clearResumeStream();
+  const { bubble, loaderWrap, answerEl, answerText, streamLoader } = createStreamingBubble();
+  loaderWrap.remove();
+  bubble.classList.add("answer-visible");
+  if (partial) answerText.innerHTML = renderMarkdownStreaming(partial);
+  resumeStream = { bubble, answerText };
+  state.streaming = true;
+  sendBtn.disabled = true;
+  chatInput.disabled = true;
+  scrollChatToBottom(true);
+}
+
+function startChatPoll(chatId) {
+  stopChatPoll();
+  chatPollTimer = setInterval(async () => {
+    if (!state.spaceId || state.chatId !== chatId) {
+      stopChatPoll();
+      return;
+    }
+    try {
+      const r = await fetch(`${API}/spaces/${state.spaceId}/chats/${chatId}`);
+      if (!r.ok) return;
+      const chat = await r.json();
+      if (chat.generating) {
+        if (resumeStream.answerText && chat.partial_answer) {
+          resumeStream.answerText.innerHTML = renderMarkdownStreaming(chat.partial_answer);
+          scrollChatToBottom();
+        }
+        return;
+      }
+      stopChatPoll();
+      state.streaming = false;
+      sendBtn.disabled = false;
+      chatInput.disabled = false;
+      clearResumeStream();
+      if (state.chatId === chatId) await selectChat(chatId, { reload: true });
+    } catch { /* keep polling */ }
+  }, 1200);
+}
+
+async function selectChat(id, opts = {}) {
   state.chatId = id;
-  await loadChats();
+  if (!opts.reload) await loadChats();
   switchTab("chat");
   let chat;
   try {
     const r = await fetch(`${API}/spaces/${state.spaceId}/chats/${id}`);
     chat = await r.json();
   } catch { return; }
-  chatScroll.innerHTML = "";
-  if (!chat.messages || !chat.messages.length) { resetChatView(); resetContextRing(); persistState(); return; }
-  for (const m of chat.messages) {
-    addBubble(m.role, m.content, m.role === "assistant");
-    if (m.role === "assistant" && m.sources) renderSources(m.sources);
+  if (!opts.reload) {
+    chatScroll.innerHTML = "";
+    if (!chat.messages || !chat.messages.length) {
+      resetChatView();
+      resetContextRing();
+      stopChatPoll();
+      clearResumeStream();
+      state.streaming = false;
+      sendBtn.disabled = false;
+      chatInput.disabled = false;
+      persistState();
+      return;
+    }
+    for (const m of chat.messages) {
+      addBubble(m.role, m.content, m.role === "assistant");
+      if (m.role === "assistant" && m.sources) renderSources(m.sources);
+    }
+  } else if (chat.messages && chat.messages.length) {
+    chatScroll.innerHTML = "";
+    for (const m of chat.messages) {
+      addBubble(m.role, m.content, m.role === "assistant");
+      if (m.role === "assistant" && m.sources) renderSources(m.sources);
+    }
+    scrollChatToBottom(true);
+  }
+  if (chat.context) updateContextRing(chat.context);
+  else resetContextRing();
+  if (chat.generating) {
+    if (!resumeStream.answerText) attachResumeStream(chat.partial_answer || "");
+    startChatPoll(id);
+  } else {
+    stopChatPoll();
+    if (!opts.reload) {
+      clearResumeStream();
+      state.streaming = false;
+      sendBtn.disabled = false;
+      chatInput.disabled = false;
+    }
   }
   persistState();
 }
@@ -2291,6 +2371,7 @@ async function sendMessage() {
     state.streaming = false;
     sendBtn.disabled = false;
     chatInput.disabled = false;
+    clearResumeStream();
     chatInput.focus();
   }
 }

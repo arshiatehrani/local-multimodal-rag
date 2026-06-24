@@ -79,3 +79,22 @@ def context_status(used: int, budget: int = MAX_CONTEXT_TOKENS, summarized: bool
         "pct": pct,
         "summarized": summarized,
     }
+
+
+def context_for_messages(messages: list) -> dict:
+    """Context ring payload for an existing chat (before the next user message)."""
+    _, hist_tokens, summarized = prepare_chat_history(messages or [], MAX_CONTEXT_TOKENS)
+    return context_status(hist_tokens, summarized=summarized)
+
+
+def context_for_turn(
+    hist_tokens: int,
+    user_query: str,
+    *,
+    answer: str = "",
+    extra: int = 0,
+    summarized: bool = False,
+) -> dict:
+    """Context ring payload for the current turn (history + query + answer + overhead)."""
+    used = hist_tokens + estimate_tokens(user_query) + estimate_tokens(answer) + extra
+    return context_status(used, summarized=summarized)
