@@ -25,6 +25,9 @@ Thumbs.db
 .idea/
 .vscode/
 
+# Cursor conversation exports
+cursor_local_multimodal_rag_web_applica.md
+
 # Temp
 *.log
 *.tmp
