@@ -431,9 +431,6 @@ def list_chats(space_id: str) -> list:
         chat_id = data.get("id")
         if not chat_id:
             continue
-        with _lock:
-            path = _sync_chat_file(space_id, data, path)
-            data = _read_json(path)
         entry = {
             "id": chat_id,
             "title": data.get("title", "New chat"),

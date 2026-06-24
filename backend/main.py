@@ -68,13 +68,13 @@ class CreateSpaceRequest(BaseModel):
 
 
 @app.post("/spaces")
-def create_space(req: CreateSpaceRequest):
-    return spaces.create_space(req.name)
+async def create_space(req: CreateSpaceRequest):
+    return await asyncio.to_thread(spaces.create_space, req.name)
 
 
 @app.get("/spaces")
-def list_spaces():
-    return {"spaces": spaces.list_spaces()}
+async def list_spaces():
+    return {"spaces": await asyncio.to_thread(spaces.list_spaces)}
 
 
 @app.get("/spaces/{space_id}")
@@ -99,13 +99,13 @@ def update_space(space_id: str, req: UpdateSpaceRequest):
 
 
 @app.delete("/spaces/{space_id}")
-def delete_space(space_id: str):
+async def delete_space(space_id: str):
     try:
-        spaces.get_space(space_id)
+        await asyncio.to_thread(spaces.get_space, space_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Space not found")
-    delete_by_space(space_id)
-    spaces.delete_space(space_id)
+    await asyncio.to_thread(spaces.delete_space, space_id)
+    asyncio.create_task(asyncio.to_thread(delete_by_space, space_id))
     return {"status": "ok"}
 
 
@@ -240,18 +240,19 @@ class CreateChatRequest(BaseModel):
 
 
 @app.get("/spaces/{space_id}/chats")
-def list_chats(space_id: str):
+async def list_chats(space_id: str):
     try:
-        spaces.get_space(space_id)
+        await asyncio.to_thread(spaces.get_space, space_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Space not found")
-    return {"chats": spaces.list_chats(space_id)}
+    chats = await asyncio.to_thread(spaces.list_chats, space_id)
+    return {"chats": chats}
 
 
 @app.post("/spaces/{space_id}/chats")
-def create_chat(space_id: str, req: CreateChatRequest):
+async def create_chat(space_id: str, req: CreateChatRequest):
     try:
-        return spaces.create_chat(space_id, req.title)
+        return await asyncio.to_thread(spaces.create_chat, space_id, req.title)
     except KeyError:
         raise HTTPException(status_code=404, detail="Space not found")
 
@@ -273,8 +274,8 @@ def get_chat(space_id: str, chat_id: str):
 
 
 @app.delete("/spaces/{space_id}/chats/{chat_id}")
-def delete_chat(space_id: str, chat_id: str):
-    spaces.delete_chat(space_id, chat_id)
+async def delete_chat(space_id: str, chat_id: str):
+    await asyncio.to_thread(spaces.delete_chat, space_id, chat_id)
     return {"status": "ok"}
 
 

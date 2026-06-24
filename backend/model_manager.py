@@ -18,6 +18,7 @@ import time
 import asyncio
 import warnings
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
@@ -273,6 +274,8 @@ class ModelManager:
         self._load_durations: dict[str, float] = {}
         self._progress_done: asyncio.Event | None = None
         self._progress_task: asyncio.Task | None = None
+        self._load_waiters: dict[str, asyncio.Event] = {}
+        self._load_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="model-load")
 
     def _set_loading_pct(self, pct: int) -> None:
         if self._loading is not None:
@@ -372,8 +375,20 @@ class ModelManager:
                 self._evict_one(name)
 
     async def _load_one(self, name: str, *, evict_others_on_retry: bool = True) -> None:
-        """Load a single model under the lock. Caller must hold ``self._lock``."""
-        if name in self._models:
+        """Load a single model. Heavy work runs off the API thread pool."""
+        async with self._lock:
+            if name in self._models:
+                return
+            if name in self._load_waiters:
+                waiter = self._load_waiters[name]
+                is_leader = False
+            else:
+                waiter = asyncio.Event()
+                self._load_waiters[name] = waiter
+                is_leader = True
+
+        if not is_leader:
+            await waiter.wait()
             return
 
         loader = self._loaders[name]
@@ -386,52 +401,58 @@ class ModelManager:
         )
         t0 = time.time()
         progress_done = self._start_load_progress(name)
+        loop = asyncio.get_running_loop()
 
         def _run_loader():
             with _WeightLoadProgress(self._set_weight_progress):
                 return loader()
 
         try:
-            self._models[name] = await asyncio.to_thread(_run_loader)
-            self._errors.pop(name, None)
-        except Exception as e:
-            if evict_others_on_retry and self._models and _is_oom(e):
-                print(
-                    f"[models] OOM loading {name} with others resident — "
-                    "evicting them and retrying once",
-                    flush=True,
+            try:
+                model = await loop.run_in_executor(self._load_executor, _run_loader)
+                async with self._lock:
+                    self._models[name] = model
+                    self._errors.pop(name, None)
+            except Exception as e:
+                if evict_others_on_retry and self._models and _is_oom(e):
+                    print(
+                        f"[models] OOM loading {name} with others resident — "
+                        "evicting them and retrying once",
+                        flush=True,
+                    )
+                    async with self._lock:
+                        self._evict_all_except(None)
+                    _compact_vram()
+                    await self._cancel_load_progress()
+                    progress_done = self._start_load_progress(name)
+                    model = await loop.run_in_executor(self._load_executor, _run_loader)
+                    async with self._lock:
+                        self._models[name] = model
+                        self._errors.pop(name, None)
+                else:
+                    await self._cancel_load_progress()
+                    raise
+
+            elapsed = time.time() - t0
+            await self._finish_load_progress(progress_done, name, elapsed)
+            self._quant[name] = _inspect_quantization(name, self._models[name])
+            print(f"[models] loaded {name} in {elapsed:.1f}s", flush=True)
+            _log_vram(f"after {name}")
+
+            used_after, _, _ = _vram_gb()
+            delta = used_after - used_before
+            if delta > _SINGLE_MODEL_VRAM_WARN_GB and _device() == "cuda":
+                msg = (
+                    f"{name} added ~{delta:.1f} GB VRAM (now {used_after:.1f} GB total). "
+                    f"Expected ~1.3 GB for 4-bit — see quant check above."
                 )
-                self._evict_all_except(None)
-                _compact_vram()
-                await self._cancel_load_progress()
-                progress_done = self._start_load_progress(name)
-
-                def _run_loader_retry():
-                    with _WeightLoadProgress(self._set_weight_progress):
-                        return loader()
-
-                self._models[name] = await asyncio.to_thread(_run_loader_retry)
-                self._errors.pop(name, None)
-            else:
-                await self._cancel_load_progress()
-                raise
-
-        elapsed = time.time() - t0
-        await self._finish_load_progress(progress_done, name, elapsed)
-        self._quant[name] = _inspect_quantization(name, self._models[name])
-        print(f"[models] loaded {name} in {elapsed:.1f}s", flush=True)
-        _log_vram(f"after {name}")
-
-        used_after, _, _ = _vram_gb()
-        delta = used_after - used_before
-        if delta > _SINGLE_MODEL_VRAM_WARN_GB and _device() == "cuda":
-            msg = (
-                f"{name} added ~{delta:.1f} GB VRAM (now {used_after:.1f} GB total). "
-                f"Expected ~1.3 GB for 4-bit — see quant check above."
-            )
-            print(f"[models] WARNING: {msg}", flush=True)
-            if self._quant[name].get("verdict", "").startswith("NOT quantized"):
-                self._errors[name] = self._quant[name]["verdict"]
+                print(f"[models] WARNING: {msg}", flush=True)
+                if self._quant[name].get("verdict", "").startswith("NOT quantized"):
+                    self._errors[name] = self._quant[name]["verdict"]
+        finally:
+            async with self._lock:
+                self._load_waiters.pop(name, None)
+                waiter.set()
 
     async def preload_all(self):
         """Background warmup at startup — loads all three models sequentially."""
@@ -443,16 +464,15 @@ class ModelManager:
         print(f"[models] warmup started (targets: {', '.join(targets)})", flush=True)
 
         for name in targets:
-            async with self._lock:
-                if name in self._models:
-                    continue
-                try:
-                    await self._load_one(name, evict_others_on_retry=False)
-                except Exception as e:
-                    self._errors[name] = repr(e)
-                    print(f"[models] FAILED to load {name}: {e!r}", flush=True)
-                    traceback.print_exc()
-                    break
+            if name in self._models:
+                continue
+            try:
+                await self._load_one(name, evict_others_on_retry=False)
+            except Exception as e:
+                self._errors[name] = repr(e)
+                print(f"[models] FAILED to load {name}: {e!r}", flush=True)
+                traceback.print_exc()
+                break
 
         st = self.status()
         print(f"[models] warmup finished: {st['count']}/{st['total']} loaded", flush=True)
@@ -546,21 +566,18 @@ class _ModelContext:
         self._name = name
 
     async def __aenter__(self):
-        await self._manager._lock.acquire()
         try:
             await self._manager._load_one(self._name)
         except Exception as e:
             self._manager._errors[self._name] = repr(e)
-            self._manager._lock.release()
             raise
-        return self._manager._models[self._name]
+        async with self._manager._lock:
+            return self._manager._models[self._name]
 
     async def __aexit__(self, exc_type, exc, tb):
-        try:
-            if exc_type is not None:
+        if exc_type is not None:
+            async with self._manager._lock:
                 self._manager._evict_one(self._name)
-        finally:
-            self._manager._lock.release()
         return False
 
 
