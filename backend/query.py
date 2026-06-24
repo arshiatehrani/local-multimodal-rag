@@ -447,6 +447,96 @@ def _format_source_header(pay: dict) -> str:
     return format_position_header(pay)
 
 
+# Letter-prefix + digit codes (course numbers, project IDs, etc.) from source text.
+_IDENTIFIER_RE = re.compile(r"\b([A-Z]{2,6})[\s\-]*(\d{2,4}[A-Z]?)\b")
+_TERM_CODE_RE = re.compile(r"\b([SWF]\d{2})\b", re.I)
+
+
+def _normalize_for_identifier_scan(text: str) -> str:
+    return (text or "").replace("\u2013", "-").replace("\u2014", "-")
+
+
+def _collect_identifiers_from_text(text: str, seen: set[str], out: list[str]) -> None:
+    text = _normalize_for_identifier_scan(text)
+    for m in _IDENTIFIER_RE.finditer(text):
+        spaced = f"{m.group(1)} {m.group(2)}"
+        compact = f"{m.group(1)}{m.group(2)}"
+        for token in (spaced, compact):
+            if token not in seen:
+                seen.add(token)
+                out.append(token)
+    for m in _TERM_CODE_RE.finditer(text):
+        token = m.group(1).upper()
+        if token not in seen:
+            seen.add(token)
+            out.append(token)
+
+
+def _extract_grounded_identifiers(hits: list, space_id: str) -> list[str]:
+    """Alphanumeric labels present in filenames and retrieved chunks (not invented)."""
+    seen: set[str] = set()
+    out: list[str] = []
+    try:
+        data = spaces.get_space(space_id)
+        for f in data.get("files", []):
+            _collect_identifiers_from_text(f.get("original_name", ""), seen, out)
+    except Exception:
+        pass
+    for hit in hits:
+        pay = hit.payload or {}
+        _collect_identifiers_from_text(pay.get("text", ""), seen, out)
+        _collect_identifiers_from_text(pay.get("filename", ""), seen, out)
+    return out
+
+
+def _grounded_identifiers_context(identifiers: list[str]) -> str:
+    if not identifiers:
+        return ""
+    lines = [
+        "[EXACT IDENTIFIERS — alphanumeric codes and labels from the documents; "
+        "copy spelling and digits verbatim; never substitute other numbers]",
+    ]
+    for token in identifiers[:40]:
+        lines.append(f"- {token}")
+    return "\n".join(lines)
+
+
+def _identifier_numbers_by_prefix(identifiers: list[str]) -> dict[str, set[str]]:
+    by_prefix: dict[str, set[str]] = {}
+    for token in identifiers:
+        m = _IDENTIFIER_RE.search(_normalize_for_identifier_scan(token))
+        if not m:
+            continue
+        by_prefix.setdefault(m.group(1), set()).add(m.group(2))
+    return by_prefix
+
+
+def _fix_identifier_drift(answer: str, identifiers: list[str]) -> str:
+    """When the model swaps digits on a known prefix (812→912), restore source forms."""
+    if not answer or not identifiers:
+        return answer
+    by_prefix = _identifier_numbers_by_prefix(identifiers)
+    if not by_prefix:
+        return answer
+
+    def repl(match: re.Match) -> str:
+        prefix, num = match.group(1), match.group(2)
+        valid = by_prefix.get(prefix)
+        if not valid or num in valid:
+            return match.group(0)
+        if len(valid) != 1:
+            return match.group(0)
+        correct = next(iter(valid))
+        original = match.group(0)
+        if re.search(rf"{re.escape(prefix)}\s+{re.escape(num)}", original):
+            return f"{prefix} {correct}"
+        if re.search(rf"{re.escape(prefix)}-{re.escape(num)}", original):
+            return f"{prefix}-{correct}"
+        return f"{prefix}{correct}"
+
+    return _IDENTIFIER_RE.sub(repl, _normalize_for_identifier_scan(answer))
+
+
 def _space_filenames_context(space_id: str) -> str:
     """Exact filenames so the model does not hallucinate course codes or titles."""
     try:
@@ -796,6 +886,10 @@ async def run_query(
     filenames_context = _space_filenames_context(space_id)
     if filenames_context:
         prefix_lines.append(filenames_context)
+    grounded_ids = _extract_grounded_identifiers(packed_hits, space_id)
+    ids_context = _grounded_identifiers_context(grounded_ids)
+    if ids_context:
+        prefix_lines.append(ids_context)
     stats_context = _space_stats_context(space_id)
     if stats_context:
         prefix_lines.append(stats_context)
@@ -830,6 +924,8 @@ async def run_query(
             "region (header/body/footer), and exact word counts. "
             "Always prefer DOCUMENT STATISTICS and PRECISE COUNT lines over guessing. "
             "When citing a file, use the EXACT filename from EXACT FILENAMES or SOURCE headers. "
+            "For course codes, catalog numbers, and similar alphanumeric labels, use ONLY forms "
+            "listed under EXACT IDENTIFIERS — never change digits or letters (e.g. do not swap 812 for 912). "
             "If the answer is not in the context, say so clearly. "
             "Never invent dates, deadlines, word limits, or requirements — copy them exactly from the context. "
             "When the user asks about a limit or length scoped to a specific part of the assignment "
@@ -859,6 +955,9 @@ async def run_query(
             answer_parts.append(token)
             yield {"type": "token", "text": token}
         full_answer = "".join(answer_parts)
+        full_answer = _fix_identifier_drift(full_answer, grounded_ids)
+        if full_answer != "".join(answer_parts):
+            yield {"type": "replace", "text": full_answer}
         sources = _collect_sources(
             packed_hits, user_query, full_answer, pos_hints, exact_word,
         )

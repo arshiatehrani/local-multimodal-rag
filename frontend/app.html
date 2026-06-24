@@ -386,7 +386,18 @@
   .bubble.streaming.answer-visible .answer-stream { display: block; }
   .bubble.streaming.answer-visible .answer-stream-indicator { display: flex; }
   .msg.assistant .bubble strong { font-weight: 700; }
-  .msg.assistant .bubble ul { margin: 8px 0 8px 20px; }
+  .msg.assistant .bubble h1,
+  .msg.assistant .bubble h2,
+  .msg.assistant .bubble h3,
+  .msg.assistant .bubble h4 {
+    font-weight: 600; line-height: 1.35; margin: 14px 0 6px;
+  }
+  .msg.assistant .bubble h1 { font-size: 18px; }
+  .msg.assistant .bubble h2 { font-size: 16px; }
+  .msg.assistant .bubble h3,
+  .msg.assistant .bubble h4 { font-size: 15px; }
+  .msg.assistant .bubble ul,
+  .msg.assistant .bubble ol { margin: 8px 0 8px 20px; }
   .msg.assistant .bubble li { margin: 4px 0; }
 
   .sources { max-width: 760px; min-width: 0; margin: -10px auto 22px; }
@@ -809,6 +820,11 @@ function renderMarkdown(text) {
   let s = escapeHtml(text);
   s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
   s = s.replace(/\*(.+?)\*/g, "<em>$1</em>");
+  s = s.replace(/^#### (.+)$/gm, "<h4>$1</h4>");
+  s = s.replace(/^### (.+)$/gm, "<h3>$1</h3>");
+  s = s.replace(/^## (.+)$/gm, "<h2>$1</h2>");
+  s = s.replace(/^# (.+)$/gm, "<h1>$1</h1>");
+  s = s.replace(/^\d+\. (.+)$/gm, "<li>$1</li>");
   s = s.replace(/^- (.+)$/gm, "<li>$1</li>");
   s = s.replace(/(<li>[\s\S]*?<\/li>)+/g, m => `<ul>${m}</ul>`);
   s = s.replace(/\n/g, "<br>");
@@ -1337,7 +1353,9 @@ async function ensureChat(suggestedTitle) {
       throw new Error(data.detail || "Could not create chat");
     }
     const chat = await r.json();
-    selectChat(chat.id, { skipListRefresh: true });
+    state.chatId = chat.id;
+    persistState();
+    pending.classList.remove("pending");
     loadChats();
     return chat.id;
   } catch (err) {
@@ -2317,6 +2335,7 @@ async function sendMessage() {
     return;
   }
 
+  let chatId = state.chatId;
   try {
     if (!(await validateCurrentSpace())) {
       const spaceId = await openSpacePicker({
@@ -2327,7 +2346,7 @@ async function sendMessage() {
       if (!spaceId) return;
     }
 
-    const chatId = await ensureChat(query.slice(0, 48));
+    chatId = await ensureChat(query.slice(0, 48));
     if (!chatId) return;
   } catch (err) {
     alert(err.message || "Could not start chat");
@@ -2354,7 +2373,7 @@ async function sendMessage() {
   try {
     const resp = await fetch(API + "/chat", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ space_id: state.spaceId, chat_id: state.chatId, query }),
+      body: JSON.stringify({ space_id: state.spaceId, chat_id: chatId, query }),
     });
     if (!resp.ok || !resp.body) throw new Error("Request failed (" + resp.status + ")");
 
@@ -2389,6 +2408,10 @@ async function sendMessage() {
         } else if (data.type === "sources") {
           pendingSources = data.sources;
           sourcesPanelEl = renderSources(pendingSources, sourcesPanelEl, false);
+        } else if (data.type === "replace") {
+          answer = data.text || "";
+          answerText.innerHTML = renderMarkdown(answer);
+          scrollChatToBottom();
         } else if (data.type === "done") {
           finishPipelineSteps(progressFill, stepsEl);
           loaderWrap.remove();

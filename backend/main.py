@@ -374,6 +374,9 @@ async def chat_endpoint(req: ChatRequest, request: Request):
                     )
                 elif ev["type"] == "sources":
                     sources = ev["sources"]
+                elif ev["type"] == "replace":
+                    answer_parts = [ev["text"]]
+                    await chat_stream.set_partial(req.space_id, req.chat_id, ev["text"])
                 elif ev["type"] == "done":
                     completed = True
                 yield _sse(ev)
