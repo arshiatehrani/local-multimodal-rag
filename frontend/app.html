@@ -1072,7 +1072,7 @@ function updateLoadStatusUI(state, s) {
   if (state === "ready") {
     txt.textContent = "Models ready";
     pctBadge.textContent = "";
-    updateConnBadge("online", "Models ready");
+    updateConnBadge("online");
     setLoadBars(100, null, 0, s?.total || 3, s?.total || 3);
     return;
   }
@@ -1086,12 +1086,12 @@ function updateLoadStatusUI(state, s) {
     const nErr = s?.errors ? Object.keys(s.errors).length : 0;
     txt.textContent = "Load error — see terminal";
     pctBadge.textContent = nErr ? String(nErr) : "";
-    updateConnBadge("online", "Load error");
+    updateConnBadge("online");
     return;
   }
   if (state === "loading") {
     txt.textContent = "Loading models";
-    updateConnBadge("online", "Loading models");
+    updateConnBadge("online");
     const overall = s.overall_pct ?? 0;
     const modelName = s.loading?.name || (s.count === 0 ? "embedder" : null);
     const modelPct = s.loading?.pct ?? (s.count === 0 ? 0 : 100);
@@ -1105,8 +1105,11 @@ function updateLoadStatusUI(state, s) {
 
 async function checkHealth() {
   if (!connKnown) updateConnBadge("checking");
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 2000);
   try {
-    const r = await fetch(API + "/models/status");
+    const r = await fetch(API + "/models/status", { signal: controller.signal });
+    clearTimeout(timeoutId);
     if (!r.ok) throw new Error();
     connKnown = true;
     const s = await r.json();
@@ -1115,12 +1118,13 @@ async function checkHealth() {
     if (s.ready || (s.chat_ready && !s.loading)) updateLoadStatusUI("ready", s);
     else if (nErr) updateLoadStatusUI("err", s);
     else updateLoadStatusUI("loading", s);
-    healthPollMs = s.ready ? 20000 : (s.loading ? 1500 : 10000);
+    healthPollMs = s.ready ? 3000 : (s.loading ? 1000 : 3000);
   } catch {
+    clearTimeout(timeoutId);
     modelsReady = false;
     connKnown = true;
     updateLoadStatusUI("offline");
-    healthPollMs = 10000;
+    healthPollMs = 2000;
   }
 }
 
