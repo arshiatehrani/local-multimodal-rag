@@ -473,7 +473,20 @@ class ModelManager:
             print("[models] warmup skipped (PRELOAD_MODELS=none)", flush=True)
             return
 
+        _, _, total_vram = _vram_gb()
         targets = list(self._ORDER) if PRELOAD_MODELS == "all" else ["embedder"]
+
+        # On GPUs with < 7.5 GB VRAM, preloading all models sequentially
+        # can cause a startup OOM crash. Downgrade target list to be safe.
+        if PRELOAD_MODELS == "all" and total_vram > 0 and total_vram < 7.5:
+            print(
+                f"[models] WARNING: GPU VRAM is {total_vram:.1f} GB (< 7.5 GB). "
+                "Warmup downgraded to 'embedder' to prevent startup OOM/crash. "
+                "Other models will load on-demand with automatic VRAM eviction.",
+                flush=True,
+            )
+            targets = ["embedder"]
+
         print(f"[models] warmup started (targets: {', '.join(targets)})", flush=True)
 
         for name in targets:
@@ -508,13 +521,51 @@ class ModelManager:
         load_kwargs = _build_load_kwargs(precision)
         quantized = "quantization_config" in load_kwargs
         device = None if quantized else _device()
+
+        orig_classification_from_pretrained = None
+        orig_auto_from_pretrained = None
+
+        if quantized:
+            try:
+                from transformers import AutoModelForSequenceClassification, AutoModel
+
+                orig_classification_from_pretrained = AutoModelForSequenceClassification.from_pretrained
+                orig_auto_from_pretrained = AutoModel.from_pretrained
+
+                def patched_classification_from_pretrained(*args, **kwargs):
+                    model = orig_classification_from_pretrained(*args, **kwargs)
+                    orig_to = model.to
+                    def dummy_to(*to_args, **to_kwargs):
+                        return model
+                    model.to = dummy_to
+                    model._orig_to = orig_to
+                    return model
+
+                def patched_auto_from_pretrained(*args, **kwargs):
+                    model = orig_auto_from_pretrained(*args, **kwargs)
+                    orig_to = model.to
+                    def dummy_to(*to_args, **to_kwargs):
+                        return model
+                    model.to = dummy_to
+                    model._orig_to = orig_to
+                    return model
+
+                AutoModelForSequenceClassification.from_pretrained = patched_classification_from_pretrained
+                AutoModel.from_pretrained = patched_auto_from_pretrained
+            except Exception:
+                pass
+
         try:
-            return cls(
+            model = cls(
                 path,
                 device=device,
                 trust_remote_code=True,
                 model_kwargs=load_kwargs,
             )
+            # Restore the original .to on the underlying model
+            if hasattr(model, "model") and hasattr(model.model, "_orig_to"):
+                model.model.to = model.model._orig_to
+            return model
         except Exception as e:
             if quantized and _device() == "cuda":
                 raise RuntimeError(
@@ -528,6 +579,13 @@ class ModelManager:
                 return cls(path, device=_device(), trust_remote_code=True,
                            model_kwargs=_build_load_kwargs("auto"))
             raise
+        finally:
+            if orig_classification_from_pretrained:
+                from transformers import AutoModelForSequenceClassification
+                AutoModelForSequenceClassification.from_pretrained = orig_classification_from_pretrained
+            if orig_auto_from_pretrained:
+                from transformers import AutoModel
+                AutoModel.from_pretrained = orig_auto_from_pretrained
 
     def _load_embedder(self):
         from sentence_transformers import SentenceTransformer
