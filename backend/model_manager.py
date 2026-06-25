@@ -183,12 +183,12 @@ def _build_load_kwargs(precision: str) -> dict:
     p = precision.lower()
 
     if p == "auto":
-        return {"torch_dtype": _best_float_dtype()}
+        return {"torch_dtype": _best_float_dtype(), "low_cpu_mem_usage": True}
 
     if _is_quant(p):
         if _device() != "cuda":
             warnings.warn(f"Precision '{precision}' needs CUDA; using float32 on CPU.")
-            return {"torch_dtype": torch.float32}
+            return {"torch_dtype": torch.float32, "low_cpu_mem_usage": True}
         from transformers import BitsAndBytesConfig
 
         if p in _EIGHT_BIT:
@@ -200,13 +200,13 @@ def _build_load_kwargs(precision: str) -> dict:
                 bnb_4bit_use_double_quant=True,
                 bnb_4bit_compute_dtype=_best_float_dtype(),
             )
-        return {"quantization_config": qcfg, "device_map": "auto"}
+        return {"quantization_config": qcfg, "device_map": "auto", "low_cpu_mem_usage": True}
 
     if p in _DTYPE_NAMES:
-        return {"torch_dtype": _resolve_dtype(p)}
+        return {"torch_dtype": _resolve_dtype(p), "low_cpu_mem_usage": True}
 
     warnings.warn(f"Unknown precision '{precision}'; defaulting to auto.")
-    return {"torch_dtype": _best_float_dtype()}
+    return {"torch_dtype": _best_float_dtype(), "low_cpu_mem_usage": True}
 
 
 def _load_generator_cls():
@@ -426,6 +426,7 @@ class ModelManager:
                 async with self._lock:
                     self._models[name] = model
                     self._errors.pop(name, None)
+                _compact_vram()
             except Exception as e:
                 if evict_others_on_retry and self._models and _is_oom(e):
                     print(
@@ -476,16 +477,13 @@ class ModelManager:
         _, _, total_vram = _vram_gb()
         targets = list(self._ORDER) if PRELOAD_MODELS == "all" else ["embedder"]
 
-        # On GPUs with < 7.5 GB VRAM, preloading all models sequentially
-        # can cause a startup OOM crash. Downgrade target list to be safe.
         if PRELOAD_MODELS == "all" and total_vram > 0 and total_vram < 7.5:
             print(
-                f"[models] WARNING: GPU VRAM is {total_vram:.1f} GB (< 7.5 GB). "
-                "Warmup downgraded to 'embedder' to prevent startup OOM/crash. "
-                "Other models will load on-demand with automatic VRAM eviction.",
+                f"[models] INFO: GPU VRAM is {total_vram:.1f} GB (< 7.5 GB). "
+                "Warmup loading all three models sequentially as configured. "
+                "If startup crashes occur, set PRELOAD_MODELS=embedder.",
                 flush=True,
             )
-            targets = ["embedder"]
 
         print(f"[models] warmup started (targets: {', '.join(targets)})", flush=True)
 
@@ -555,30 +553,44 @@ class ModelManager:
             except Exception:
                 pass
 
-        try:
-            model = cls(
-                path,
-                device=device,
-                trust_remote_code=True,
-                model_kwargs=load_kwargs,
-            )
-            # Restore the original .to on the underlying model
-            if hasattr(model, "model") and hasattr(model.model, "_orig_to"):
-                model.model.to = model.model._orig_to
-            return model
-        except Exception as e:
+        model = None
+        last_err = None
+        for attn in ("flash_attention_2", "sdpa", None):
+            try:
+                current_kwargs = dict(load_kwargs)
+                if attn:
+                    current_kwargs["attn_implementation"] = attn
+                else:
+                    current_kwargs.pop("attn_implementation", None)
+                model = cls(
+                    path,
+                    device=device,
+                    trust_remote_code=True,
+                    model_kwargs=current_kwargs,
+                )
+                break
+            except Exception as e:
+                last_err = e
+                continue
+
+        if model is None:
             if quantized and _device() == "cuda":
                 raise RuntimeError(
-                    f"{role}: {precision} load failed ({e}). "
+                    f"{role}: {precision} load failed ({last_err}). "
                     "fp16 fallback is disabled on GPU because it prevents keeping "
                     "multiple models resident on 6 GB cards. "
                     "Check bitsandbytes/CUDA, or fix PRECISION for this model."
-                ) from e
+                ) from last_err
             if quantized:
-                warnings.warn(f"{role}: '{precision}' load failed ({e}); using float32 on CPU.")
+                warnings.warn(f"{role}: '{precision}' load failed ({last_err}); using float32 on CPU.")
                 return cls(path, device=_device(), trust_remote_code=True,
                            model_kwargs=_build_load_kwargs("auto"))
-            raise
+            raise last_err
+
+        # Restore the original .to on the underlying model
+        if hasattr(model, "model") and hasattr(model.model, "_orig_to"):
+            model.model.to = model.model._orig_to
+        return model
         finally:
             if orig_classification_from_pretrained:
                 from transformers import AutoModelForSequenceClassification
@@ -608,7 +620,7 @@ class ModelManager:
 
         model = None
         last_err = None
-        for extra in ({"attn_implementation": "flash_attention_2"}, {}):
+        for extra in ({"attn_implementation": "flash_attention_2"}, {"attn_implementation": "sdpa"}, {}):
             try:
                 model = model_cls.from_pretrained(GENERATOR_PATH, **load_kwargs, **extra)
                 break
