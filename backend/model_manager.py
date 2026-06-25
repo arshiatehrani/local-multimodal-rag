@@ -553,44 +553,45 @@ class ModelManager:
             except Exception:
                 pass
 
-        model = None
-        last_err = None
-        for attn in ("flash_attention_2", "sdpa", None):
-            try:
-                current_kwargs = dict(load_kwargs)
-                if attn:
-                    current_kwargs["attn_implementation"] = attn
-                else:
-                    current_kwargs.pop("attn_implementation", None)
-                model = cls(
-                    path,
-                    device=device,
-                    trust_remote_code=True,
-                    model_kwargs=current_kwargs,
-                )
-                break
-            except Exception as e:
-                last_err = e
-                continue
+        try:
+            model = None
+            last_err = None
+            for attn in ("flash_attention_2", "sdpa", None):
+                try:
+                    current_kwargs = dict(load_kwargs)
+                    if attn:
+                        current_kwargs["attn_implementation"] = attn
+                    else:
+                        current_kwargs.pop("attn_implementation", None)
+                    model = cls(
+                        path,
+                        device=device,
+                        trust_remote_code=True,
+                        model_kwargs=current_kwargs,
+                    )
+                    break
+                except Exception as e:
+                    last_err = e
+                    continue
 
-        if model is None:
-            if quantized and _device() == "cuda":
-                raise RuntimeError(
-                    f"{role}: {precision} load failed ({last_err}). "
-                    "fp16 fallback is disabled on GPU because it prevents keeping "
-                    "multiple models resident on 6 GB cards. "
-                    "Check bitsandbytes/CUDA, or fix PRECISION for this model."
-                ) from last_err
-            if quantized:
-                warnings.warn(f"{role}: '{precision}' load failed ({last_err}); using float32 on CPU.")
-                return cls(path, device=_device(), trust_remote_code=True,
-                           model_kwargs=_build_load_kwargs("auto"))
-            raise last_err
+            if model is None:
+                if quantized and _device() == "cuda":
+                    raise RuntimeError(
+                        f"{role}: {precision} load failed ({last_err}). "
+                        "fp16 fallback is disabled on GPU because it prevents keeping "
+                        "multiple models resident on 6 GB cards. "
+                        "Check bitsandbytes/CUDA, or fix PRECISION for this model."
+                    ) from last_err
+                if quantized:
+                    warnings.warn(f"{role}: '{precision}' load failed ({last_err}); using float32 on CPU.")
+                    return cls(path, device=_device(), trust_remote_code=True,
+                               model_kwargs=_build_load_kwargs("auto"))
+                raise last_err
 
-        # Restore the original .to on the underlying model
-        if hasattr(model, "model") and hasattr(model.model, "_orig_to"):
-            model.model.to = model.model._orig_to
-        return model
+            # Restore the original .to on the underlying model
+            if hasattr(model, "model") and hasattr(model.model, "_orig_to"):
+                model.model.to = model.model._orig_to
+            return model
         finally:
             if orig_classification_from_pretrained:
                 from transformers import AutoModelForSequenceClassification
