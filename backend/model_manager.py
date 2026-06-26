@@ -18,6 +18,7 @@ import time
 import asyncio
 import warnings
 import traceback
+import importlib.util
 from concurrent.futures import ThreadPoolExecutor
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "max_split_size_mb:128")
@@ -29,6 +30,8 @@ MODELS_DIR = os.environ.get("MODELS_DIR", os.path.join(_PROJECT_ROOT, "models"))
 EMBEDDER_PATH = os.path.join(MODELS_DIR, "Qwen3-VL-Embedding-2B")
 RERANKER_PATH = os.path.join(MODELS_DIR, "Qwen3-VL-Reranker-2B")
 GENERATOR_PATH = os.path.join(MODELS_DIR, "Qwen3-VL-2B-Instruct")
+EMBEDDER_SCRIPT_PATH = os.path.join(EMBEDDER_PATH, "scripts", "qwen3_vl_embedding.py")
+RERANKER_SCRIPT_PATH = os.path.join(RERANKER_PATH, "scripts", "qwen3_vl_reranker.py")
 
 # embedder | all | none  — default loads all three at startup
 PRELOAD_MODELS = os.environ.get("PRELOAD_MODELS", "all").lower()
@@ -111,17 +114,102 @@ def _get_device_and_precision(role: str) -> tuple[str, str]:
     used, free, total = _vram_gb()
     if total <= 0:
         return "cpu", "auto"
-    # Check if hybrid low-VRAM mode is enabled (default is true)
-    hybrid_enabled = os.environ.get("HYBRID_LOW_VRAM", "true").lower() == "true"
-    # If the system has less than 7.5 GB total VRAM (e.g. 6 GB cards),
-    # load the embedder and reranker on CPU to avoid driver crashes
-    # and keep all models resident.
-    if hybrid_enabled and total < 7.5:
-        if role in ("embedder", "reranker"):
-            return "cpu", "auto"
-        else:
-            return "cuda", PRECISION.get(role, "4bit")
     return _device(), PRECISION.get(role, "4bit")
+
+
+def _load_module_from_path(module_name: str, path: str):
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load module {module_name!r} from {path!r}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class _EmbedderAdapter:
+    """Wrap Qwen3VLEmbedder to expose quantized model for inspection and provide encode interface."""
+    def __init__(self, impl):
+        self._impl = impl
+        # Store the actual quantized model for inspection
+        self.model = impl.model  # This is Qwen3VLForEmbedding with quantized Linear4bit layers
+        self.processor = impl.processor
+
+    def modules(self):
+        """Expose modules from the underlying quantized model."""
+        return self.model.modules()
+
+    def encode(self, inputs, *, prompt=None, prompt_name=None, batch_size=32, normalize_embeddings=False, **kwargs):
+        if isinstance(inputs, (str, dict)):
+            inputs = [inputs]
+
+        payloads = []
+        instruction = prompt or getattr(self._impl, "default_instruction", None)
+        for item in inputs:
+            if isinstance(item, str):
+                payloads.append({"text": item, "instruction": instruction})
+            elif isinstance(item, dict):
+                payloads.append({
+                    "text": item.get("text"),
+                    "image": item.get("image"),
+                    "video": item.get("video"),
+                    "instruction": item.get("instruction", instruction),
+                })
+            else:
+                payloads.append({"text": str(item), "instruction": instruction})
+
+        embeddings = self._impl.process(payloads, normalize=normalize_embeddings)
+        return embeddings.detach().cpu().numpy()
+
+
+class _RerankerAdapter:
+    """Wrap Qwen3VLReranker to expose quantized model for inspection and provide predict interface."""
+    def __init__(self, impl):
+        self._impl = impl
+        # Store the actual quantized model for inspection
+        self.model = impl.model  # This is Qwen3VLModel with quantized Linear4bit layers
+        self.processor = impl.processor
+
+    def modules(self):
+        """Expose modules from the underlying quantized model."""
+        return self.model.modules()
+
+    def predict(self, inputs, *, prompt=None, prompt_name=None, batch_size=32, **kwargs):
+        if not inputs:
+            return []
+
+        documents = []
+        query_text = None
+        query_image = None
+        query_video = None
+
+        for index, pair in enumerate(inputs):
+            if isinstance(pair, tuple) and len(pair) == 2:
+                if index == 0:
+                    query_text = pair[0]
+                documents.append({"text": pair[1]})
+            elif isinstance(pair, dict):
+                if index == 0:
+                    query = pair.get("query", {})
+                    query_text = query.get("text")
+                    query_image = query.get("image")
+                    query_video = query.get("video")
+                document = pair.get("document", {})
+                documents.append({
+                    "text": document.get("text"),
+                    "image": document.get("image"),
+                    "video": document.get("video"),
+                })
+            else:
+                if index == 0:
+                    query_text = str(pair)
+                documents.append({"text": ""})
+
+        payload = {
+            "instruction": prompt or getattr(self._impl, "default_instruction", None),
+            "query": {"text": query_text, "image": query_image, "video": query_video},
+            "documents": documents,
+        }
+        return self._impl.process(payload)
 
 
 def _log_vram(label: str) -> None:
@@ -542,102 +630,15 @@ class ModelManager:
     async def generator(self):
         return _ModelContext(self, "generator")
 
-    @staticmethod
-    def _load_sentence_model(cls, path, role):
-        device, precision = _get_device_and_precision(role)
-        load_kwargs = _build_load_kwargs(precision)
-        quantized = "quantization_config" in load_kwargs
-        # If we load on GPU in 4-bit/8-bit, the model constructor resolves the device map internally,
-        # so we pass device=None. Otherwise we specify the target device explicitly.
-        model_device = None if (quantized and device == "cuda") else device
-
-        orig_classification_from_pretrained = None
-        orig_auto_from_pretrained = None
-
-        if quantized:
-            try:
-                from transformers import AutoModelForSequenceClassification, AutoModel
-
-                orig_classification_from_pretrained = AutoModelForSequenceClassification.from_pretrained
-                orig_auto_from_pretrained = AutoModel.from_pretrained
-
-                def patched_classification_from_pretrained(*args, **kwargs):
-                    model = orig_classification_from_pretrained(*args, **kwargs)
-                    orig_to = model.to
-                    def dummy_to(*to_args, **to_kwargs):
-                        return model
-                    model.to = dummy_to
-                    model._orig_to = orig_to
-                    return model
-
-                def patched_auto_from_pretrained(*args, **kwargs):
-                    model = orig_auto_from_pretrained(*args, **kwargs)
-                    orig_to = model.to
-                    def dummy_to(*to_args, **to_kwargs):
-                        return model
-                    model.to = dummy_to
-                    model._orig_to = orig_to
-                    return model
-
-                AutoModelForSequenceClassification.from_pretrained = patched_classification_from_pretrained
-                AutoModel.from_pretrained = patched_auto_from_pretrained
-            except Exception:
-                pass
-
-        try:
-            model = None
-            last_err = None
-            for attn in ("flash_attention_2", "sdpa", None):
-                try:
-                    current_kwargs = dict(load_kwargs)
-                    if attn:
-                        current_kwargs["attn_implementation"] = attn
-                    else:
-                        current_kwargs.pop("attn_implementation", None)
-                    model = cls(
-                        path,
-                        device=model_device,
-                        trust_remote_code=True,
-                        model_kwargs=current_kwargs,
-                    )
-                    break
-                except Exception as e:
-                    last_err = e
-                    continue
-
-            if model is None:
-                if quantized and device == "cuda":
-                    raise RuntimeError(
-                        f"{role}: {precision} load failed ({last_err}). "
-                        "fp16 fallback is disabled on GPU because it prevents keeping "
-                        "multiple models resident on 6 GB cards. "
-                        "Check bitsandbytes/CUDA, or fix PRECISION for this model."
-                    ) from last_err
-                if quantized:
-                    warnings.warn(f"{role}: '{precision}' load failed ({last_err}); using float32 on CPU.")
-                    return cls(path, device=device, trust_remote_code=True,
-                               model_kwargs=_build_load_kwargs("auto"))
-                raise last_err
-
-            # Restore the original .to on the underlying model
-            if hasattr(model, "model") and hasattr(model.model, "_orig_to"):
-                model.model.to = model.model._orig_to
-            return model
-        finally:
-            if orig_classification_from_pretrained:
-                from transformers import AutoModelForSequenceClassification
-                AutoModelForSequenceClassification.from_pretrained = orig_classification_from_pretrained
-            if orig_auto_from_pretrained:
-                from transformers import AutoModel
-                AutoModel.from_pretrained = orig_auto_from_pretrained
-
     def _load_embedder(self):
-        from sentence_transformers import SentenceTransformer
-        return self._load_sentence_model(SentenceTransformer, EMBEDDER_PATH, "embedder")
+        module = _load_module_from_path("qwen3_vl_embedding_local", EMBEDDER_SCRIPT_PATH)
+        load_kwargs = _build_load_kwargs(PRECISION["embedder"])
+        return _EmbedderAdapter(module.Qwen3VLEmbedder(EMBEDDER_PATH, **load_kwargs))
 
     def _load_reranker(self):
-        from sentence_transformers import CrossEncoder
-        return self._load_sentence_model(CrossEncoder, RERANKER_PATH, "reranker")
+        module = _load_module_from_path("qwen3_vl_reranker_local", RERANKER_SCRIPT_PATH)
+        load_kwargs = _build_load_kwargs(PRECISION["reranker"])
+        return _RerankerAdapter(module.Qwen3VLReranker(RERANKER_PATH, **load_kwargs))
 
     def _load_generator(self):
         from transformers import AutoProcessor
