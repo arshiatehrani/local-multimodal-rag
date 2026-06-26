@@ -568,15 +568,15 @@ async def ingest_file_stream(file_bytes: bytes, filename: str, space_id: str, fi
                     all_payloads.append(pay)
 
                 done = min(i + len(batch), total)
-            pct = 15 + int(78 * (bi + 1) / n_batches)
-            yield {
-                "type": "progress",
-                "pct": pct,
-                "text": f"Embedding {done}/{total} chunks…",
-                "stage": "embed",
-                "chunks_done": done,
-                "chunks_total": total,
-            }
+                pct = 15 + int(78 * (bi + 1) / n_batches)
+                yield {
+                    "type": "progress",
+                    "pct": pct,
+                    "text": f"Embedding {done}/{total} chunks…",
+                    "stage": "embed",
+                    "chunks_done": done,
+                    "chunks_total": total,
+                }
 
     yield {"type": "progress", "pct": 96, "text": "Saving to vector store…", "stage": "store"}
     await asyncio.to_thread(upsert_points, all_vectors, all_payloads)

@@ -609,6 +609,13 @@ async def run_query(
         else:
             context_parts.append(f"[SOURCE: {header}]")
     context_str = "\n\n---\n\n".join(context_parts)
+    
+    # ── Confidence scoring (#15): low-confidence disclaimer ──
+    low_confidence = (
+        best_rerank_score is not None
+        and best_rerank_score < RERANK_CONFIDENCE_THRESHOLD
+    )
+    
     if low_confidence:
         context_str = (
             "[LOW CONFIDENCE WARNING: The retrieved documents may not be highly "
@@ -620,12 +627,6 @@ async def run_query(
         context_str = "\n".join(prefix_lines) + "\n\n---\n\n" + context_str
 
     yield _status("prepare", "Preparing response…")
-
-    # ── Confidence scoring (#15): low-confidence disclaimer ──
-    low_confidence = (
-        best_rerank_score is not None
-        and best_rerank_score < RERANK_CONFIDENCE_THRESHOLD
-    )
 
     async with await manager.generator() as gen:
         system_prompt = (
