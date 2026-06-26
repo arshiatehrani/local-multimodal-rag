@@ -157,7 +157,7 @@ flowchart LR
     PDFjs[PDF.js viewer]
   end
 
-  subgraph API["backend · FastAPI :8000"]
+  subgraph API["backend - FastAPI :8000"]
     Main[main.py routes]
     Spaces[spaces.py]
     Ingest[ingest.py]
@@ -168,7 +168,7 @@ flowchart LR
     QStore[qdrant_store.py]
   end
 
-  subgraph Models["Local GPU · NF4 4-bit"]
+  subgraph Models["Local GPU - NF4 4-bit"]
     Emb[Qwen3-VL-Embedding-2B]
     Rer[Qwen3-VL-Reranker-2B]
     Gen[Qwen3-VL-2B-Instruct]
@@ -209,10 +209,10 @@ What runs when you execute `run.bat`:
 ```mermaid
 flowchart TB
   subgraph Processes
-    Docker[docker compose · Qdrant]
-    Uvicorn[uvicorn main:app · port 8000]
-    Static[python -m http.server · port 3000]
-    Browser[Browser · app.html]
+    Docker[docker compose - Qdrant]
+    Uvicorn[uvicorn main:app - port 8000]
+    Static[python -m http.server - port 3000]
+    Browser[Browser - app.html]
   end
 
   Browser -->|fetch API| Uvicorn
@@ -286,39 +286,39 @@ sequenceDiagram
   participant MM as model_manager
   participant Ctx as rag_context.py
 
-  UI->>API: POST /chat { space_id, query }
-  API->>Pos: parse_position(query)
-  API->>MM: embed query (Embedding-2B)
-  API-->>UI: status embed
-  API->>Q: hybrid search + positional filter
-  API-->>UI: status search
-  API->>MM: rerank candidates (Reranker-2B)
-  API-->>UI: status rank
-  API->>Ctx: pack_retrieval_chunks + history
-  API-->>UI: status prepare · context ring
-  API->>MM: stream generate (Instruct-2B)
-  API-->>UI: status generate · token × N
-  API->>API: _collect_sources + highlight_phrases
-  API-->>UI: sources · done
+  UI->>API: POST /chat
+  API->>Pos: parse_position
+  alt is_overview_query
+    API->>Q: fetch_overview_chunks
+  else standard_query
+    API->>MM: embed query
+    API-->>UI: status embed
+    API->>Q: hybrid search
+    API-->>UI: status search
+    API->>MM: rerank candidates
+    API-->>UI: status rank
+  end
+  API->>Ctx: pack_retrieval_chunks
+  API-->>UI: status prepare
+  API->>MM: stream generate
+  API-->>UI: status generate
+  API->>API: _collect_sources
+  API->>MM: generate follow_ups
+  API-->>UI: follow_ups / sources / done
 ```
 
 **Ordered steps inside `run_query`:**
 
 1. **Meta check** — greetings / capability questions may bypass RAG (see below).
-2. **Embed query** — Qwen3-VL-Embedding-2B (NF4), query instruction prompt.
-3. **Hybrid search** — dense + keyword, merged with reciprocal rank fusion (RRF);
-   filtered to active `space_id`; positional hints from `parse_position`.
-4. **Positional boost / post-filter** — re-order and refine hits
-   ([`boost_hits_by_position`](backend/positioning.py),
-   [`post_filter_hits`](backend/positioning.py)).
-5. **Rerank** — Qwen3-VL-Reranker-2B (skipped only for tiny corpora + simple
-   positional/count queries, never for summaries).
-6. **Pack context** — greedy fill within token budget; dedupe overlapping chunks
-   ([`rag_context.py`](backend/rag_context.py)).
-7. **Generate** — Qwen3-VL-2B-Instruct with grounding rules + optional space system
-   prompt + chat history.
-8. **Collect sources** — one card per packed chunk; compute `highlight_phrases` from
-   the finished answer.
+2. **Query Routing** — Overview bypassing (`_is_overview_query`). If true, bypasses embedding and reranking to directly fetch document structure chunks.
+3. **Embed query** — Qwen3-VL-Embedding-2B (NF4), query instruction prompt.
+4. **Hybrid search** — dense + keyword, merged with reciprocal rank fusion (RRF); filtered to active `space_id`; positional hints & filename constraints from `parse_position`.
+5. **Positional boost / post-filter** — re-order and refine hits ([`boost_hits_by_position`](backend/positioning.py)).
+6. **Rerank** — Qwen3-VL-Reranker-2B (skipped for overview queries and simple positional/count queries).
+7. **Pack context** — greedy fill within token budget; dedupe overlapping chunks ([`rag_context.py`](backend/rag_context.py)).
+8. **Generate** — Qwen3-VL-2B-Instruct with grounding rules + optional space system prompt + chat history.
+9. **Follow-up Generation** — Generates 3 contextual follow-up questions dynamically at the end of the stream.
+10. **Collect sources** — one card per packed chunk; compute `highlight_phrases`.
 
 ### Meta-question fast path
 
@@ -328,7 +328,7 @@ Short social or capability questions should not trigger spurious PDF citations.
 flowchart TD
   Q[User query] --> M{_is_casual_greeting or<br/>language-capability?}
   M -->|Yes| K{Document keywords<br/>paragraph, pdf, submit…}
-  K -->|No| Fast[Direct generator reply<br/>no Qdrant · no sources]
+  K -->|No| Fast[Direct generator reply<br/>no Qdrant - no sources]
   K -->|Yes| RAG[Full RAG pipeline]
   M -->|No| RAG
 ```
@@ -377,9 +377,9 @@ The generator sees a fixed ~8k token budget split between history and retrieval.
 ```mermaid
 flowchart TB
   subgraph Budget["~8192 tokens (MAX_CONTEXT_TOKENS)"]
-    Hist[Chat history · up to 35%]
-    Ret[Retrieved chunks · greedy pack]
-    Resp[Reserved for response · 1024]
+    Hist[Chat history - up to 35%]
+    Ret[Retrieved chunks - greedy pack]
+    Resp[Reserved for response - 1024]
   end
 
   Hist --> Trim[Last MAX_HISTORY_TURNS turns]
