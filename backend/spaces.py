@@ -191,7 +191,7 @@ def _sync_chat_file(space_id: str, data: dict, path: str) -> str:
             desired = f"{_chat_slug(title)}__{chat_id[:12]}.json"
             desired_path = os.path.join(_chats_dir(space_id), desired)
         _write_json(path, data)
-        os.replace(path, desired_path)
+        _safe_replace(path, desired_path)
         _chat_path_cache[(space_id, chat_id)] = desired_path
         return desired_path
 
@@ -272,21 +272,24 @@ def _read_json(path: str) -> dict:
         return json.load(f)
 
 
+def _safe_replace(src: str, dst: str) -> None:
+    """Robust os.replace with retry for Windows locking/antivirus race conditions."""
+    for attempt in range(5):
+        try:
+            os.replace(src, dst)
+            break
+        except (PermissionError, OSError):
+            import time
+            if attempt == 4:
+                raise
+            time.sleep(0.1)
+
 def _write_json(path: str, data: dict) -> None:
     # Atomic-ish write: tmp then replace.
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-    # Retry loop for Windows WinError 5 (file lock race conditions)
-    for attempt in range(5):
-        try:
-            os.replace(tmp, path)
-            break
-        except PermissionError:
-            import time
-            if attempt == 4:
-                raise
-            time.sleep(0.1)
+    _safe_replace(tmp, path)
 
 
 def kind_for(filename: str) -> str:
