@@ -111,10 +111,12 @@ def _get_device_and_precision(role: str) -> tuple[str, str]:
     used, free, total = _vram_gb()
     if total <= 0:
         return "cpu", "auto"
+    # Check if hybrid low-VRAM mode is enabled (default is true)
+    hybrid_enabled = os.environ.get("HYBRID_LOW_VRAM", "true").lower() == "true"
     # If the system has less than 7.5 GB total VRAM (e.g. 6 GB cards),
     # load the embedder and reranker on CPU to avoid driver crashes
     # and keep all models resident.
-    if total < 7.5:
+    if hybrid_enabled and total < 7.5:
         if role in ("embedder", "reranker"):
             return "cpu", "auto"
         else:
