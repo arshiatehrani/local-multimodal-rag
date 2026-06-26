@@ -48,6 +48,12 @@ echo Qdrant is up.
 
 :backendstart
 echo.
+REM Configure model warmup on startup:
+REM "all" (default): Loads all 3 models sequentially. Takes ~2-3 mins but everything is instant later.
+REM "embedder": Only loads the embedder. Faster startup.
+REM "none": Starts instantly. Models spin up on-demand during your first chat/upload.
+set "PRELOAD_MODELS=all"
+
 echo [2/4] Launching backend  (http://127.0.0.1:8000) ...
 REM NO --reload here on purpose: this is a "use the app" launcher, not a dev
 REM server. On Windows --reload makes WatchFiles try to watch the whole project
