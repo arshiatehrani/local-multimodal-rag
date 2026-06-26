@@ -17,7 +17,7 @@ from positioning import (
     tokenize_words,
 )
 from stat_query import try_metadata_stat_response, resolve_stat_metric
-from qdrant_store import hybrid_search, count_points
+from qdrant_store import hybrid_search, count_points, fetch_overview_chunks
 from rag_context import (
     MAX_CONTEXT_TOKENS,
     estimate_tokens,
@@ -164,7 +164,7 @@ def _dedupe_hits(hits: list) -> list:
 def _should_skip_rerank(n_points: int, query: str, pos_hints: dict) -> bool:
     """Skip rerank only for tiny corpora + simple positional/count queries."""
     if _is_overview_query(query):
-        return False
+        return True
     if n_points > SKIP_RERANK_MAX_POINTS:
         return False
     if resolve_stat_metric(pos_hints):
@@ -531,12 +531,16 @@ async def run_query(
             if norm > 0:
                 q_vec = q_vec / norm
 
-    yield _status("search", "Searching content…")
-
-    hits = hybrid_search(q_vec, user_query, space_id, top_k=top_k_retrieve, pos_hints=pos_hints)
-    hits = post_filter_hits(hits, pos_hints)
-    hits = boost_hits_by_position(hits, pos_hints)
-    hits = _dedupe_hits(hits)
+    overview = _is_overview_query(user_query)
+    if overview:
+        yield _status("search", "Fetching document overview…")
+        hits = fetch_overview_chunks(space_id, top_k=top_k_retrieve)
+    else:
+        yield _status("search", "Searching content…")
+        hits = hybrid_search(q_vec, user_query, space_id, top_k=top_k_retrieve, pos_hints=pos_hints)
+        hits = post_filter_hits(hits, pos_hints)
+        hits = boost_hits_by_position(hits, pos_hints)
+        hits = _dedupe_hits(hits)
 
     if not hits:
         yield {"type": "sources", "sources": []}
@@ -676,4 +680,33 @@ async def run_query(
         )
         yield {"type": "sources", "sources": sources}
         if not _cancelled(cancel):
+            try:
+                yield _status("generate", "Suggesting follow-ups…")
+                followup_prompt = (
+                    "Based on the context and your answer above, suggest exactly 3 short follow-up questions "
+                    "the user could ask to explore this topic further. Output ONLY the 3 questions, one per line, starting with '- '."
+                )
+                follow_msgs = messages.copy()
+                follow_msgs.append({"role": "assistant", "content": full_answer})
+                follow_msgs.append({"role": "user", "content": followup_prompt})
+                
+                followup_parts = []
+                async for tok in _async_stream_generate(
+                    gen["model"], gen["processor"], follow_msgs, 80, cancel=cancel,
+                ):
+                    followup_parts.append(tok)
+                
+                follow_ups = []
+                for line in "".join(followup_parts).split('\n'):
+                    line = line.strip()
+                    if line.startswith("- "):
+                        follow_ups.append(line[2:].strip())
+                    elif line and "?" in line:
+                        follow_ups.append(line.lstrip("1234567890. ").strip())
+                
+                if follow_ups:
+                    yield {"type": "follow_ups", "questions": follow_ups[:3]}
+            except Exception:
+                pass
+                
             yield {"type": "done"}

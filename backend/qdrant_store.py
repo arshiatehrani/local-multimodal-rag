@@ -141,6 +141,8 @@ def _positional_filter(space_id: str, hints: dict) -> Filter | None:
         return None
     must = [FieldCondition(key="space_id", match=MatchValue(value=space_id))]
 
+    if "filename" in hints:
+        must.append(FieldCondition(key="filename", match=MatchText(text=hints["filename"])))
     if "page" in hints:
         must.append(FieldCondition(key="page", match=MatchValue(value=hints["page"])))
     if "page_from_end" in hints:
@@ -205,6 +207,25 @@ def _keyword_search(query_vector, query_text: str, space_id: str, top_k: int):
             query_filter=flt,
         )
         return result.points
+    except Exception:
+        return []
+
+def fetch_overview_chunks(space_id: str, top_k: int = 15):
+    """Query Routing: Bypass semantic search and pull document overview chunks directly."""
+    try:
+        from qdrant_client.models import MatchAny
+        flt = Filter(must=[
+            FieldCondition(key="space_id", match=MatchValue(value=space_id)),
+            FieldCondition(key="chunk_kind", match=MatchAny(any=["metadata_toc", "document_stats", "page_full"]))
+        ])
+        result, _ = client.scroll(
+            collection_name=COLLECTION,
+            scroll_filter=flt,
+            limit=top_k,
+            with_payload=True,
+            with_vectors=False,
+        )
+        return result
     except Exception:
         return []
 

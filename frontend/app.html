@@ -401,6 +401,10 @@
   .msg.assistant .bubble li { margin: 4px 0; }
   .inline-cite { color: var(--accent); cursor: pointer; background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; font-size: 12px; font-weight: 500; transition: background .15s ease; white-space: nowrap; }
   .inline-cite:hover { background: var(--accent-glow); }
+  
+  .follow-ups-list { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+  .follow-up-btn { background: var(--surface-2); border: 1px solid var(--border); color: var(--accent); border-radius: 8px; padding: 8px 12px; font-size: 12.5px; cursor: pointer; text-align: left; transition: all .15s ease; line-height: 1.4; }
+  .follow-up-btn:hover { border-color: var(--accent); background: var(--accent-soft); }
 
   .sources { max-width: 760px; min-width: 0; margin: -10px auto 22px; }
   details.sources-panel { background: var(--surface-elevated); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; box-shadow: var(--bubble-shadow); }
@@ -2458,6 +2462,17 @@ async function sendMessage(queryToRetry) {
           answer = data.text || "";
           answerText.innerHTML = renderMarkdown(answer);
           scrollChatToBottom();
+        } else if (data.type === "follow_ups" && data.questions && data.questions.length) {
+          const fuList = document.createElement("div");
+          fuList.className = "follow-ups-list";
+          for (const q of data.questions) {
+            const btn = document.createElement("button");
+            btn.className = "follow-up-btn";
+            btn.textContent = q;
+            btn.onclick = () => { chatInput.value = q; sendMessage(); };
+            fuList.appendChild(btn);
+          }
+          bubble.appendChild(fuList);
         } else if (data.type === "done") {
           finishPipelineSteps(progressFill, stepsEl);
           loaderWrap.remove();

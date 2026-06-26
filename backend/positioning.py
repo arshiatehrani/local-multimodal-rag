@@ -142,6 +142,11 @@ def parse_position(query: str) -> dict[str, Any]:
     q = query.lower()
     hints: dict[str, Any] = {}
 
+    # --- Filename cross-referencing (#9) ---
+    m = re.search(r"\b(?:in|from|of)\s+['\"]?([\w-]+\.(?:pdf|txt|md|csv|png|jpg|jpeg|webp))['\"]?", q)
+    if m:
+        hints["filename"] = m.group(1).lower()
+
     # --- Region / layout ---
     if re.search(r"\b(?:in\s+the\s+)?(?:page\s+)?header\b", q):
         hints["region"] = "header"
@@ -306,6 +311,8 @@ def count_character_matches(text: str, char: str, case_insensitive: bool = False
 
 
 def _payload_matches_scope(pay: dict, hints: dict) -> bool:
+    if hints.get("filename") and hints["filename"] not in pay.get("filename", "").lower():
+        return False
     if hints.get("page") and pay.get("page") != hints["page"]:
         return False
     if hints.get("page_from_end") and pay.get("page_from_end") != hints["page_from_end"]:
@@ -633,6 +640,8 @@ def boost_hits_by_position(hits: list, hints: dict) -> list:
     def score(hit) -> float:
         pay = hit.payload
         s = 0.0
+        if hints.get("filename") and hints["filename"] in pay.get("filename", "").lower():
+            s += 5.0
         if hints.get("region") and pay.get("region") == hints["region"]:
             s += 3.0
         if hints.get("paragraph_index") is not None and pay.get("paragraph_index") == hints["paragraph_index"]:
