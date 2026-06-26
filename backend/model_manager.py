@@ -523,13 +523,15 @@ class ModelManager:
                 self._errors[name] = repr(e)
                 print(f"[models] FAILED to load {name}: {e!r}", flush=True)
                 traceback.print_exc()
-                break
+                continue
 
         st = self.status()
         print(f"[models] warmup finished: {st['count']}/{st['total']} loaded", flush=True)
         if st["quantization"]:
             for n, q in st["quantization"].items():
                 print(f"[models]   {n}: {q.get('verdict', '?')}", flush=True)
+        if st["loaded"].get("embedder") and st["loaded"].get("reranker") and st["loaded"].get("generator"):
+            print("[models] warmup verified: all three models loaded", flush=True)
 
     async def embedder(self):
         return _ModelContext(self, "embedder")
