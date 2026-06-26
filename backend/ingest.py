@@ -495,7 +495,14 @@ async def ingest_file_stream(file_bytes: bytes, filename: str, space_id: str, fi
     ensure_collection()
     yield {"type": "progress", "pct": 5, "text": "Processing document…", "stage": "process"}
 
-    items, text_stats = await asyncio.to_thread(_items_from_bytes, file_bytes, filename)
+    parse_task = asyncio.create_task(
+        asyncio.to_thread(_items_from_bytes, file_bytes, filename)
+    )
+    while not parse_task.done():
+        yield {"type": "progress", "pct": 12, "text": "Extracting document structure (processing)…", "stage": "process"}
+        await asyncio.sleep(2)
+        
+    items, text_stats = parse_task.result()
     if not items:
         yield {"type": "complete", "chunks": 0, "pct": 100, "text": "No content extracted", "text_stats": None}
         return
@@ -599,7 +606,13 @@ async def ingest_file_stream(file_bytes: bytes, filename: str, space_id: str, fi
                 }
 
     yield {"type": "progress", "pct": 96, "text": "Saving to vector store…", "stage": "store"}
-    await asyncio.to_thread(upsert_points, all_vectors, all_payloads)
+    upsert_task = asyncio.create_task(
+        asyncio.to_thread(upsert_points, all_vectors, all_payloads)
+    )
+    while not upsert_task.done():
+        yield {"type": "progress", "pct": 96, "text": "Saving to vector store (processing)…", "stage": "store"}
+        await asyncio.sleep(2)
+    upsert_task.result()
     yield {
         "type": "complete",
         "chunks": len(all_vectors),

@@ -537,10 +537,17 @@ async def run_query(
         hits = fetch_overview_chunks(space_id, top_k=top_k_retrieve)
     else:
         yield _status("search", "Searching content…")
-        hits = hybrid_search(q_vec, user_query, space_id, top_k=top_k_retrieve, pos_hints=pos_hints)
-        hits = post_filter_hits(hits, pos_hints)
-        hits = boost_hits_by_position(hits, pos_hints)
-        hits = _dedupe_hits(hits)
+        def _do_search():
+            _h = hybrid_search(q_vec, user_query, space_id, top_k=top_k_retrieve, pos_hints=pos_hints)
+            _h = post_filter_hits(_h, pos_hints)
+            _h = boost_hits_by_position(_h, pos_hints)
+            return _dedupe_hits(_h)
+            
+        search_task = asyncio.create_task(asyncio.to_thread(_do_search))
+        while not search_task.done():
+            yield _status("search", "Searching content (processing)…")
+            await asyncio.sleep(2)
+        hits = search_task.result()
 
     if not hits:
         yield {"type": "sources", "sources": []}
