@@ -36,7 +36,7 @@ PRELOAD_MODELS = os.environ.get("PRELOAD_MODELS", "all").lower()
 # After a single 4-bit model loads, used VRAM should stay below this (GB).
 _SINGLE_MODEL_VRAM_WARN_GB = float(os.environ.get("SINGLE_MODEL_VRAM_WARN_GB", "2.5"))
 # Need at least this much free before attempting another load while others resident.
-_LOAD_HEADROOM_GB = float(os.environ.get("LOAD_HEADROOM_GB", "1.8"))
+_LOAD_HEADROOM_GB = float(os.environ.get("LOAD_HEADROOM_GB", "3.2"))
 # Timeout (seconds) for a single model load — prevents indefinite hangs.
 MODEL_LOAD_TIMEOUT = float(os.environ.get("MODEL_LOAD_TIMEOUT", "600"))
 
@@ -104,6 +104,22 @@ def _vram_gb():
         return used / 1e9, free / 1e9, total / 1e9
     except Exception:
         return 0.0, 0.0, 0.0
+
+
+def _get_device_and_precision(role: str) -> tuple[str, str]:
+    """Resolve (device, precision) for a given model role based on GPU VRAM availability."""
+    used, free, total = _vram_gb()
+    if total <= 0:
+        return "cpu", "auto"
+    # If the system has less than 7.5 GB total VRAM (e.g. 6 GB cards),
+    # load the embedder and reranker on CPU to avoid driver crashes
+    # and keep all models resident.
+    if total < 7.5:
+        if role in ("embedder", "reranker"):
+            return "cpu", "auto"
+        else:
+            return "cuda", PRECISION.get(role, "4bit")
+    return _device(), PRECISION.get(role, "4bit")
 
 
 def _log_vram(label: str) -> None:
@@ -398,6 +414,15 @@ class ModelManager:
         loader = self._loaders[name]
         _compact_vram()
         used_before, free_before, _ = _vram_gb()
+
+        device, _ = _get_device_and_precision(name)
+        if device == "cuda" and free_before < _LOAD_HEADROOM_GB and self._models:
+            print(f"[models] Only {free_before:.1f} GB free (< {_LOAD_HEADROOM_GB} GB). Proactively evicting to prevent crash.", flush=True)
+            async with self._lock:
+                self._evict_all_except(None)
+            _compact_vram()
+            used_before, free_before, _ = _vram_gb()
+
         print(
             f"[models] loading {name} ... ({len(self._models)} already resident, "
             f"{free_before:.1f} GB free)",
@@ -515,10 +540,12 @@ class ModelManager:
 
     @staticmethod
     def _load_sentence_model(cls, path, role):
-        precision = PRECISION.get(role, "bf16")
+        device, precision = _get_device_and_precision(role)
         load_kwargs = _build_load_kwargs(precision)
         quantized = "quantization_config" in load_kwargs
-        device = None if quantized else _device()
+        # If we load on GPU in 4-bit/8-bit, the model constructor resolves the device map internally,
+        # so we pass device=None. Otherwise we specify the target device explicitly.
+        model_device = None if (quantized and device == "cuda") else device
 
         orig_classification_from_pretrained = None
         orig_auto_from_pretrained = None
@@ -565,7 +592,7 @@ class ModelManager:
                         current_kwargs.pop("attn_implementation", None)
                     model = cls(
                         path,
-                        device=device,
+                        device=model_device,
                         trust_remote_code=True,
                         model_kwargs=current_kwargs,
                     )
@@ -575,7 +602,7 @@ class ModelManager:
                     continue
 
             if model is None:
-                if quantized and _device() == "cuda":
+                if quantized and device == "cuda":
                     raise RuntimeError(
                         f"{role}: {precision} load failed ({last_err}). "
                         "fp16 fallback is disabled on GPU because it prevents keeping "
@@ -584,7 +611,7 @@ class ModelManager:
                     ) from last_err
                 if quantized:
                     warnings.warn(f"{role}: '{precision}' load failed ({last_err}); using float32 on CPU.")
-                    return cls(path, device=_device(), trust_remote_code=True,
+                    return cls(path, device=device, trust_remote_code=True,
                                model_kwargs=_build_load_kwargs("auto"))
                 raise last_err
 
@@ -613,10 +640,13 @@ class ModelManager:
 
         processor = AutoProcessor.from_pretrained(GENERATOR_PATH, trust_remote_code=True)
         model_cls = _load_generator_cls()
-        precision = PRECISION.get("generator", "bf16")
+        device, precision = _get_device_and_precision("generator")
         load_kwargs = dict(_build_load_kwargs(precision))
         load_kwargs["trust_remote_code"] = True
-        load_kwargs.setdefault("device_map", _device())
+        if device == "cuda":
+            load_kwargs.setdefault("device_map", "auto")
+        else:
+            load_kwargs.setdefault("device_map", "cpu")
         quantized = "quantization_config" in load_kwargs
 
         model = None
@@ -630,14 +660,14 @@ class ModelManager:
                 continue
 
         if model is None:
-            if quantized and _device() == "cuda":
+            if quantized and device == "cuda":
                 raise RuntimeError(
                     f"generator: {precision} load failed ({last_err}). "
                     "fp16 fallback disabled on GPU (see model_manager.py)."
                 ) from last_err
             fb = dict(_build_load_kwargs("auto"))
             fb["trust_remote_code"] = True
-            fb.setdefault("device_map", _device())
+            fb.setdefault("device_map", device)
             model = model_cls.from_pretrained(GENERATOR_PATH, **fb)
 
         model.eval()
