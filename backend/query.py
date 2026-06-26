@@ -563,9 +563,15 @@ async def run_query(
         async with await manager.reranker() as reranker:
             docs = [_doc_text_for_rerank(h.payload) for h in hits]
             pairs = [(user_query, d) for d in docs]
-            scores = await asyncio.to_thread(
-                reranker.predict, pairs, prompt=RERANK_INSTRUCTION,
+            rank_task = asyncio.create_task(
+                asyncio.to_thread(
+                    reranker.predict, pairs, prompt=RERANK_INSTRUCTION,
+                )
             )
+            while not rank_task.done():
+                yield _status("rank", "Ranking matches (processing)…")
+                await asyncio.sleep(2)
+            scores = rank_task.result()
             scores = np.asarray(scores, dtype=float)
             ranked = np.argsort(scores)[::-1][:top_k_final]
             best_rerank_score = float(scores[ranked[0]]) if len(ranked) > 0 else None

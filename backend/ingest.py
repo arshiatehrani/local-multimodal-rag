@@ -538,13 +538,33 @@ async def ingest_file_stream(file_bytes: bytes, filename: str, space_id: str, fi
                             encode_inputs.append({"image": item["content"]})
 
                 if encode_inputs:
-                    new_vecs = await asyncio.to_thread(
-                        embedder.encode,
-                        encode_inputs,
-                        prompt=DOC_INSTRUCTION,
-                        normalize_embeddings=True,
-                        batch_size=EMBED_BATCH,
+                    encode_task = asyncio.create_task(
+                        asyncio.to_thread(
+                            embedder.encode,
+                            encode_inputs,
+                            prompt=DOC_INSTRUCTION,
+                            normalize_embeddings=True,
+                            batch_size=EMBED_BATCH,
+                        )
                     )
+                    
+                    while not encode_task.done():
+                        # Keep-alive heartbeat: emit progress while waiting for slow batches (e.g. dense pages)
+                        done_temp = min(i, total)
+                        pct = 15 + int(78 * bi / n_batches)
+                        yield {
+                            "type": "progress",
+                            "pct": pct,
+                            "text": f"Embedding {done_temp}/{total} chunks (processing)...",
+                            "stage": "embed",
+                            "chunks_done": done_temp,
+                            "chunks_total": total,
+                        }
+                        # Wait 2 seconds between pulses to keep SSE alive without spamming
+                        await asyncio.sleep(2)
+                        
+                    new_vecs = encode_task.result()
+
                     
                     new_idx = 0
                     for idx, item in enumerate(batch):
