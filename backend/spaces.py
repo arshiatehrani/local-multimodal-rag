@@ -277,7 +277,16 @@ def _write_json(path: str, data: dict) -> None:
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+    # Retry loop for Windows WinError 5 (file lock race conditions)
+    for attempt in range(5):
+        try:
+            os.replace(tmp, path)
+            break
+        except PermissionError:
+            import time
+            if attempt == 4:
+                raise
+            time.sleep(0.1)
 
 
 def kind_for(filename: str) -> str:
