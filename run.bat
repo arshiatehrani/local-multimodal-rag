@@ -65,21 +65,7 @@ echo [3/4] Launching frontend (http://127.0.0.1:3000) ...
 start "RAG Frontend" cmd /k ""%PY%" -m http.server 3000 --bind 127.0.0.1 --directory frontend"
 
 echo.
-echo [4/4] Waiting for the backend to come online...
-set /a tries=0
-:waitloop
-set /a tries+=1
-if %tries% gtr 60 (
-    echo [WARN] Backend did not respond after ~2 min. Opening the page anyway.
-    goto openbrowser
-)
-timeout /t 2 /nobreak >nul
-curl -s -o nul http://127.0.0.1:8000/health
-if errorlevel 1 goto waitloop
-
-:openbrowser
-echo.
-echo Backend is up. Opening the app in your browser...
+echo [4/4] Opening the app in your browser...
 start "" http://127.0.0.1:3000/app.html
 
 echo.

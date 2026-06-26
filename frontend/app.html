@@ -1099,6 +1099,12 @@ function updateLoadStatusUI(state, s) {
     setLoadBars(100, null, 0, s?.total || 3, s?.total || 3);
     return;
   }
+  if (state === "starting") {
+    txt.textContent = "Starting backend…";
+    pctBadge.textContent = "";
+    updateConnBadge("checking");
+    return;
+  }
   if (state === "offline") {
     txt.textContent = "Backend offline";
     pctBadge.textContent = "";
@@ -1126,6 +1132,8 @@ function updateLoadStatusUI(state, s) {
   updateConnBadge("online");
 }
 
+let backendStarted = false;
+
 async function checkHealth() {
   if (!connKnown) updateConnBadge("checking");
   const controller = new AbortController();
@@ -1135,6 +1143,7 @@ async function checkHealth() {
     clearTimeout(timeoutId);
     if (!r.ok) throw new Error();
     connKnown = true;
+    backendStarted = true;
     const s = await r.json();
     modelsReady = Boolean(s.ready || s.chat_ready);
     const nErr = s.errors ? Object.keys(s.errors).length : 0;
@@ -1146,7 +1155,11 @@ async function checkHealth() {
     clearTimeout(timeoutId);
     modelsReady = false;
     connKnown = true;
-    updateLoadStatusUI("offline");
+    if (!backendStarted) {
+      updateLoadStatusUI("starting");
+    } else {
+      updateLoadStatusUI("offline");
+    }
     healthPollMs = 2000;
   }
 }
