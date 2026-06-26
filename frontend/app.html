@@ -133,6 +133,7 @@
   .load-status-head .pct-badge {
     font-size: 10px; font-weight: 600; color: var(--accent); flex-shrink: 0;
   }
+  .load-bars { margin-left: 16px; display: flex; flex-direction: column; gap: 6px; }
   .load-bar-track {
     width: 100%; height: 6px; border-radius: 999px;
     background: var(--surface-2); border: 1px solid var(--border); overflow: hidden;
@@ -157,14 +158,14 @@
   .load-status.err .load-bars { display: none; }
 
   .conn-badge {
-    display: flex; align-items: center; gap: 7px;
+    display: flex; align-items: center; gap: 8px;
     margin-top: 8px; padding-top: 8px;
     border-top: 1px solid var(--border);
     font-size: 11px; font-weight: 500; line-height: 1.35;
     color: var(--text-dim);
   }
   .conn-badge .conn-dot {
-    width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
     background: var(--text-dim);
   }
   .conn-badge.online { color: var(--text); }
