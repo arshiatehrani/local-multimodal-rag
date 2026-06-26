@@ -56,7 +56,7 @@ def _cap_image(pil_img: Image.Image, max_dim: int = MAX_IMAGE_DIM) -> Image.Imag
         return pil_img
     scale = max_dim / float(max(w, h))
     new_size = (max(1, int(w * scale)), max(1, int(h * scale)))
-    return pil_img.resize(new_size, Image.LANCZOS)
+    return pil_img.resize(new_size, Image.BICUBIC)
 
 
 def _chunk_long_paragraph(text: str, max_words: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[tuple[str, int, int]]:
