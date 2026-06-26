@@ -399,6 +399,8 @@
   .msg.assistant .bubble ul,
   .msg.assistant .bubble ol { margin: 8px 0 8px 20px; }
   .msg.assistant .bubble li { margin: 4px 0; }
+  .inline-cite { color: var(--accent); cursor: pointer; background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; font-size: 12px; font-weight: 500; transition: background .15s ease; white-space: nowrap; }
+  .inline-cite:hover { background: var(--accent-glow); }
 
   .sources { max-width: 760px; min-width: 0; margin: -10px auto 22px; }
   details.sources-panel { background: var(--surface-elevated); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; box-shadow: var(--bubble-shadow); }
@@ -835,6 +837,19 @@ function closeUnclosedMarkdown(text) {
   if ((noBold.match(/\*/g) || []).length % 2 === 1) s += "*";
   return s;
 }
+
+window.pendingSources = [];
+window.openCitation = function(filename, page) {
+  if (!window.pendingSources) return;
+  const p = page ? parseInt(page, 10) : null;
+  const match = window.pendingSources.find(s => s.filename === filename && (!p || parseInt(s.page, 10) === p));
+  if (match) {
+     openPdfSource(match, window.pendingSources, window.pendingSources.indexOf(match));
+  } else {
+     const match2 = window.pendingSources.find(s => s.filename === filename);
+     if (match2) openPdfSource(match2, window.pendingSources, window.pendingSources.indexOf(match2));
+  }
+};
 function renderMarkdown(text) {
   if (!text) return "";
   let s = escapeHtml(text);
@@ -847,6 +862,9 @@ function renderMarkdown(text) {
   s = s.replace(/^\d+\. (.+)$/gm, "<li>$1</li>");
   s = s.replace(/^- (.+)$/gm, "<li>$1</li>");
   s = s.replace(/(<li>[\s\S]*?<\/li>)+/g, m => `<ul>${m}</ul>`);
+  s = s.replace(/\[Source:\s*(.+?)(?:,\s*p\.(\d+))?\]/g, (match, fname, p) => {
+    return `<span class="inline-cite" onclick="window.openCitation('${fname.replace(/'/g, "\\'")}', '${p || ""}')">[Source: ${fname}${p ? ', p.'+p : ''}]</span>`;
+  });
   s = s.replace(/\n/g, "<br>");
   return s;
 }
@@ -2434,6 +2452,7 @@ async function sendMessage(queryToRetry) {
           updateContextRing(data);
         } else if (data.type === "sources") {
           pendingSources = data.sources;
+          window.pendingSources = data.sources;
           sourcesPanelEl = renderSources(pendingSources, sourcesPanelEl, false);
         } else if (data.type === "replace") {
           answer = data.text || "";

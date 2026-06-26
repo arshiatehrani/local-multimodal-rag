@@ -40,12 +40,17 @@ RERANK_INSTRUCTION = "Retrieve images or text relevant to the user's query."
 MAX_NEW_TOKENS = 1024
 SUMMARY_MAX_NEW_TOKENS = 512
 META_MAX_NEW_TOKENS = 256
+HYDE_MAX_TOKENS = 64  # short hypothetical answer for query expansion
 # Only skip rerank for tiny corpora with simple positional/count queries (not summaries).
 SKIP_RERANK_MAX_POINTS = int(__import__("os").environ.get("SKIP_RERANK_MAX_POINTS", "4"))
+# Reranker confidence: if the best reranker score is below this, prepend a disclaimer.
+RERANK_CONFIDENCE_THRESHOLD = float(__import__("os").environ.get("RERANK_CONFIDENCE_THRESHOLD", "0.15"))
 GEN_KWARGS = {
     "do_sample": False,
     "repetition_penalty": 1.15,
     "no_repeat_ngram_size": 4,
+    "cache_implementation": "quantized",  # INT8 KV cache: halves VRAM during generation
+    "cache_config": {"nbits": 8, "backend": "quanto"},
 }
 
 
@@ -198,6 +203,32 @@ def _doc_text_for_rerank(pay: dict) -> str:
 
 def _format_source_header(pay: dict) -> str:
     return format_position_header(pay)
+
+
+def _compress_chunk_text(text: str, query: str, max_sentences: int = 6) -> str:
+    """Contextual compression: keep only sentences most relevant to the query.
+
+    Splits the chunk into sentences, scores each by keyword overlap with the
+    query, and keeps the top `max_sentences`. This lets more diverse chunks
+    fit inside the context window.
+    """
+    if not text or not query:
+        return text
+    # Split on sentence boundaries (period/question/exclamation + space or end)
+    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+    if len(sentences) <= max_sentences:
+        return text
+    query_words = set(query.lower().split())
+    scored = []
+    for i, sent in enumerate(sentences):
+        sent_words = set(sent.lower().split())
+        overlap = len(query_words & sent_words)
+        # Small positional bonus for first/last sentences (often contain key info)
+        pos_bonus = 0.5 if i == 0 or i == len(sentences) - 1 else 0
+        scored.append((overlap + pos_bonus, i, sent))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    kept = sorted(scored[:max_sentences], key=lambda x: x[1])  # restore order
+    return " ".join(s for _, _, s in kept)
 
 
 
@@ -454,6 +485,27 @@ async def run_query(
     if _cancelled(cancel):
         return
 
+    # ── HyDE query expansion (#5): embed a hypothetical answer for better retrieval ──
+    hyde_enabled = __import__("os").environ.get("ENABLE_HYDE", "0") == "1"
+    hyde_text = None
+    if hyde_enabled and not pos_hints and not overview:
+        try:
+            async with await manager.generator() as gen:
+                hyde_prompt = (
+                    "Write a short factual answer (1-2 sentences) to this question "
+                    "as if you had the source document: " + user_query
+                )
+                hyde_messages = [{"role": "user", "content": hyde_prompt}]
+                parts = []
+                async for tok in _async_stream_generate(
+                    gen["model"], gen["processor"], hyde_messages,
+                    HYDE_MAX_TOKENS, cancel=cancel,
+                ):
+                    parts.append(tok)
+                hyde_text = "".join(parts).strip()
+        except Exception:
+            hyde_text = None
+
     async with await manager.embedder() as embedder:
         q_vec = await asyncio.to_thread(
             embedder.encode,
@@ -462,6 +514,22 @@ async def run_query(
             normalize_embeddings=True,
         )
         q_vec = q_vec[0]
+
+        # HyDE: blend hypothetical answer embedding with original query vector
+        if hyde_text:
+            hyde_vec = await asyncio.to_thread(
+                embedder.encode,
+                [hyde_text],
+                prompt=QUERY_INSTRUCTION,
+                normalize_embeddings=True,
+            )
+            hyde_vec = hyde_vec[0]
+            # Weighted blend: 70% original query, 30% hypothetical
+            q_vec = 0.7 * q_vec + 0.3 * hyde_vec
+            # Re-normalize
+            norm = np.linalg.norm(q_vec)
+            if norm > 0:
+                q_vec = q_vec / norm
 
     yield _status("search", "Searching content…")
 
@@ -482,6 +550,7 @@ async def run_query(
             yield {"type": "done"}
         return
 
+    best_rerank_score = None
     if _should_skip_rerank(n_points, user_query, pos_hints):
         yield _status("rank", "Selecting matches…")
         reranked_hits = hits[:top_k_final]
@@ -495,6 +564,7 @@ async def run_query(
             )
             scores = np.asarray(scores, dtype=float)
             ranked = np.argsort(scores)[::-1][:top_k_final]
+            best_rerank_score = float(scores[ranked[0]]) if len(ranked) > 0 else None
         reranked_hits = [hits[i] for i in ranked]
 
     used = hist_tokens + estimate_tokens(user_query) + 200
@@ -528,14 +598,30 @@ async def run_query(
         header = _format_source_header(pay)
         facts = _position_facts_for_chunk(pay)
         if pay.get("modality") == "text":
-            context_parts.append(f"[SOURCE: {header}]\n{facts}\n{pay.get('text', '')}")
+            chunk_text = pay.get('text', '')
+            # Contextual compression (#6): extract most relevant sentences
+            chunk_text = _compress_chunk_text(chunk_text, user_query)
+            context_parts.append(f"[SOURCE: {header}]\n{facts}\n{chunk_text}")
         else:
             context_parts.append(f"[SOURCE: {header}]")
     context_str = "\n\n---\n\n".join(context_parts)
+    if low_confidence:
+        context_str = (
+            "[LOW CONFIDENCE WARNING: The retrieved documents may not be highly "
+            "relevant to this query. If the context does not contain a clear answer, "
+            "state that you could not find strong evidence in the uploaded documents.]\n\n"
+            + context_str
+        )
     if prefix_lines:
         context_str = "\n".join(prefix_lines) + "\n\n---\n\n" + context_str
 
     yield _status("prepare", "Preparing response…")
+
+    # ── Confidence scoring (#15): low-confidence disclaimer ──
+    low_confidence = (
+        best_rerank_score is not None
+        and best_rerank_score < RERANK_CONFIDENCE_THRESHOLD
+    )
 
     async with await manager.generator() as gen:
         system_prompt = (
@@ -558,6 +644,8 @@ async def run_query(
             "do not substitute total document statistics. "
             "Reply in the same language the user writes in when appropriate. "
             "Keep answers concise; do not repeat the same sentence. "
+            "When referencing information from the context, cite the source inline "
+            "using the format [Source: filename, p.X] so the user can verify. "
             "Cite sources using filename, page, paragraph, and word positions."
         )
         try:
