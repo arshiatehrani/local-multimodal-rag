@@ -158,7 +158,7 @@ class _EmbedderAdapter:
                 payloads.append({"text": str(item), "instruction": instruction})
 
         embeddings = self._impl.process(payloads, normalize=normalize_embeddings)
-        return embeddings.detach().cpu().numpy()
+        return embeddings.detach().cpu().float().numpy()
 
 
 class _RerankerAdapter:
